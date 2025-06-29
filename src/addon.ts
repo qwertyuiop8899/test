@@ -3,7 +3,7 @@ import { getStreamContent, VixCloudStreamInfo, ExtractorConfig } from "./extract
 import * as fs from 'fs';
 import { landingTemplate } from './landingPage';
 import * as path from 'path';
-import express from 'express';
+import express, { Request, Response, NextFunction } from 'express'; // ✅ CORRETTO: Import tipizzato
 import { AnimeUnityExtractor } from './extractors/animeunity';
 import { KitsuProvider } from './providers/kitsu'; 
 import { formatMediaFlowUrl } from './utils/mediaflow';
@@ -14,11 +14,11 @@ interface AddonConfig {
   mediaFlowProxyPassword?: string;
   tmdbApiKey?: string;
   bothLinks?: string;
-  animeunityEnabled?: string; // ✅ AGGIUNTO: Parametro AnimeUnity
+  animeunityEnabled?: string;
   [key: string]: any;
 }
 
-// ✅ AGGIUNTO: Classe provider AnimeUnity
+// Classe provider AnimeUnity
 class AnimeUnityProvider {
   private extractor = new AnimeUnityExtractor();
   private kitsuProvider = new KitsuProvider();
@@ -119,7 +119,7 @@ const baseManifest: Manifest = {
     icon: "/public/icon.png",
     background: "/public/backround.png",
     types: ["movie", "series"],
-    idPrefixes: ["tt", "kitsu"], // ✅ MODIFICATO: Aggiunto "kitsu"
+    idPrefixes: ["tt", "kitsu"],
     catalogs: [],
     resources: ["stream"],
     behaviorHints: {
@@ -147,7 +147,7 @@ const baseManifest: Manifest = {
             type: "checkbox"
         },
         {
-            key: "animeunityEnabled", // ✅ AGGIUNTO: Parametro AnimeUnity
+            key: "animeunityEnabled",
             title: "Enable AnimeUnity (Kitsu Catalog)",
             type: "checkbox"
         }
@@ -215,6 +215,9 @@ function createBuilder(config: AddonConfig = {}) {
         async ({
             id,
             type,
+        }: {  // ✅ CORRETTO: Annotazioni di tipo esplicite
+            id: string;
+            type: string;
         }): Promise<{
             streams: Stream[];
         }> => {
@@ -223,7 +226,7 @@ function createBuilder(config: AddonConfig = {}) {
                 
                 const allStreams: Stream[] = [];
                 
-                // ✅ AGGIUNTO: Gestione AnimeUnity per ID Kitsu con fallback variabile ambiente
+                // Gestione AnimeUnity per ID Kitsu con fallback variabile ambiente
                 const animeUnityEnabled = (config.animeunityEnabled === 'on') || 
                                         (process.env.ANIMEUNITY_ENABLED?.toLowerCase() === 'true');
                 
@@ -248,7 +251,7 @@ function createBuilder(config: AddonConfig = {}) {
                     }
                 }
                 
-                // ✅ ESISTENTE: Mantieni logica VixSrc per tutti gli altri ID (NON MODIFICATA)
+                // Mantieni logica VixSrc per tutti gli altri ID
                 if (!id.startsWith('kitsu:')) {
                     console.log(`📺 Processing non-Kitsu ID with VixSrc: ${id}`);
                     
@@ -302,20 +305,20 @@ function createBuilder(config: AddonConfig = {}) {
     return builder;
 }
 
-// --- Server Express ---
-
+// Server Express
 const app = express();
 
 app.use('/public', express.static(path.join(__dirname, '..', 'public')));
 
-app.get('/', (_, res) => {
+// ✅ CORRETTO: Annotazioni di tipo esplicite per Express
+app.get('/', (_: Request, res: Response) => {
     const manifest = loadCustomConfig();
     const landingHTML = landingTemplate(manifest);
     res.setHeader('Content-Type', 'text/html');
     res.send(landingHTML);
 });
 
-app.use((req, res, next) => {
+app.use((req: Request, res: Response, next: NextFunction) => {
     const configString = req.path.split('/')[1];
     const config = parseConfigFromArgs(configString);
     const builder = createBuilder(config);
