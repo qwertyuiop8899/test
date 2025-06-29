@@ -4,72 +4,97 @@ import { AnimeUnityResult, AnimeUnityEpisode, StreamData } from '../types/animeu
 
 const BASE_URL = 'https://www.animeunity.so';
 const HEADERS = {
-  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 };
 
 export class AnimeUnityExtractor {
   private axiosInstance: AxiosInstance;
   private csrfToken: string = '';
-  private sessionCookies: string = '';
-  private lastTokenTime: number = 0;
+  private sessionInitialized: boolean = false;
 
   constructor() {
-    // Crea istanza axios con jar cookie automatico
+    // Crea istanza axios con cookie jar automatico
     this.axiosInstance = axios.create({
       baseURL: BASE_URL,
-      timeout: 20000,
+      timeout: 30000,
       headers: HEADERS,
-      withCredentials: true
+      withCredentials: true,
+      maxRedirects: 5
     });
+
+    // Intercettore per gestire cookie automaticamente
+    this.axiosInstance.interceptors.response.use(
+      (response) => {
+        // Salva automaticamente i cookie dalle risposte
+        if (response.headers['set-cookie']) {
+          // I cookie vengono gestiti automaticamente da withCredentials
+        }
+        return response;
+      },
+      (error) => {
+        if (error.response?.status === 419) {
+          console.log('🔄 CSRF token expired, reinitializing session...');
+          this.sessionInitialized = false;
+          this.csrfToken = '';
+        }
+        return Promise.reject(error);
+      }
+    );
   }
 
-  private async refreshSession(): Promise<void> {
-    const now = Date.now();
-    
-    // Rinnova sessione ogni 2 minuti
-    if (!this.csrfToken || (now - this.lastTokenTime) > 120000) {
-      console.log('🔄 Refreshing AnimeUnity session...');
-      
-      try {
-        const response = await this.axiosInstance.get('/');
-        const $ = cheerio.load(response.data);
-        
-        this.csrfToken = $('meta[name=csrf-token]').attr('content') || '';
-        
-        // Estrai e salva tutti i cookie
-        const setCookieHeaders = response.headers['set-cookie'];
-        if (setCookieHeaders) {
-          this.sessionCookies = setCookieHeaders
-            .map(cookie => cookie.split(';')[0])
-            .join('; ');
+  private async initializeSession(): Promise<void> {
+    if (this.sessionInitialized && this.csrfToken) {
+      return;
+    }
+
+    console.log('🔄 Initializing AnimeUnity session...');
+
+    try {
+      // Prima richiesta per ottenere cookie di sessione
+      const homeResponse = await this.axiosInstance.get('/', {
+        headers: {
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+          'Accept-Language': 'it-IT,it;q=0.8,en-US;q=0.5,en;q=0.3',
+          'Cache-Control': 'no-cache',
+          'Pragma': 'no-cache'
         }
-        
-        this.lastTokenTime = now;
-        
-        console.log(`✅ Session refreshed - Token: ${this.csrfToken.substring(0, 10)}...`);
-        console.log(`🍪 Cookies: ${this.sessionCookies.substring(0, 50)}...`);
-        
-      } catch (error) {
-        console.error('❌ Failed to refresh session:', error);
-        throw error;
+      });
+
+      const $ = cheerio.load(homeResponse.data);
+      this.csrfToken = $('meta[name=csrf-token]').attr('content') || '';
+
+      if (!this.csrfToken) {
+        throw new Error('CSRF token not found in page');
       }
+
+      this.sessionInitialized = true;
+      console.log(`✅ Session initialized - CSRF Token: ${this.csrfToken.substring(0, 10)}...`);
+
+    } catch (error) {
+      console.error('❌ Failed to initialize session:', error);
+      throw error;
     }
   }
 
   private async makeAuthenticatedRequest(endpoint: string, data: any): Promise<any> {
-    await this.refreshSession();
-    
+    await this.initializeSession();
+
     const config = {
       headers: {
-        'X-Requested-With': 'XMLHttpRequest',
+        'Accept': 'application/json, text/plain, */*',
         'Content-Type': 'application/json;charset=utf-8',
+        'X-Requested-With': 'XMLHttpRequest',
         'X-CSRF-Token': this.csrfToken,
-        'Referer': BASE_URL,
-        'Cookie': this.sessionCookies,
+        'Referer': BASE_URL + '/',
+        'Origin': BASE_URL,
+        'Accept-Language': 'it-IT,it;q=0.8,en-US;q=0.5,en;q=0.3',
+        'Cache-Control': 'no-cache',
+        'Pragma': 'no-cache',
         ...HEADERS
-      }
+      },
+      withCredentials: true
     };
-    
+
     return await this.axiosInstance.post(endpoint, data, config);
   }
 
@@ -106,7 +131,7 @@ export class AnimeUnityExtractor {
       
       for (const endpoint of endpoints) {
         try {
-          console.log(`🔍 Searching: ${searchTerm} via ${endpoint.url}`);
+          console.log(`🔍 Searching: "${searchTerm}" via ${endpoint.url}`);
           
           const payload = endpoint.isLive 
             ? { title: searchTerm }
@@ -118,7 +143,8 @@ export class AnimeUnityExtractor {
 
           const response = await this.makeAuthenticatedRequest(endpoint.url, payload);
           
-          console.log(`✅ Search successful: ${response.data.records?.length || 0} results`);
+          const recordsCount = response.data.records?.length || 0;
+          console.log(`✅ Search successful: ${recordsCount} results for "${searchTerm}"`);
 
           for (const record of response.data.records || []) {
             const animeId = record.id;
@@ -137,10 +163,18 @@ export class AnimeUnityExtractor {
                 episodes_count: record.episodes_count || 0,
                 language_type: this.detectLanguageType(title)
               });
+              
+              console.log(`📺 Found: ${title} (${this.detectLanguageType(title)})`);
             }
           }
         } catch (error) {
-          console.error(`❌ Search failed for ${searchTerm}:`, error.response?.status || error.message);
+          console.error(`❌ Search failed for "${searchTerm}":`, error.response?.status || error.message);
+          
+          // Se otteniamo 419, reinizializziamo la sessione
+          if (error.response?.status === 419) {
+            this.sessionInitialized = false;
+            this.csrfToken = '';
+          }
         }
       }
     }
@@ -153,13 +187,10 @@ export class AnimeUnityExtractor {
     const episodes: AnimeUnityEpisode[] = [];
     
     try {
-      await this.refreshSession();
+      await this.initializeSession();
       
       const countResponse = await this.axiosInstance.get(`/info_api/${animeId}/`, {
-        headers: {
-          'Cookie': this.sessionCookies,
-          ...HEADERS
-        }
+        withCredentials: true
       });
       
       const totalEpisodes = countResponse.data.episodes_count || 0;
@@ -170,10 +201,7 @@ export class AnimeUnityExtractor {
         
         const episodesResponse = await this.axiosInstance.get(`/info_api/${animeId}/1`, {
           params: { start_range: start, end_range: end },
-          headers: {
-            'Cookie': this.sessionCookies,
-            ...HEADERS
-          }
+          withCredentials: true
         });
         
         episodes.push(...episodesResponse.data.episodes.map((ep: any) => ({
@@ -193,14 +221,11 @@ export class AnimeUnityExtractor {
 
   async extractStreamData(animeId: number, animeSlug: string, episodeId: number): Promise<StreamData> {
     try {
-      await this.refreshSession();
+      await this.initializeSession();
       
       const episodeUrl = `/anime/${animeId}-${animeSlug}/${episodeId}`;
       const pageResponse = await this.axiosInstance.get(episodeUrl, {
-        headers: {
-          'Cookie': this.sessionCookies,
-          ...HEADERS
-        }
+        withCredentials: true
       });
       
       const $ = cheerio.load(pageResponse.data);
@@ -244,7 +269,7 @@ export class AnimeUnityExtractor {
           ...HEADERS,
           'Referer': BASE_URL
         },
-        timeout: 20000,
+        timeout: 30000,
         httpsAgent: new (require('https').Agent)({ rejectUnauthorized: false })
       });
       
