@@ -1,6 +1,6 @@
 import axios, { AxiosInstance, AxiosError } from 'axios';
 import * as cheerio from 'cheerio';
-import { AnimeUnityResult, AnimeUnityEpisode, StreamData } from '../types/animeunity';
+import { AnimeUnityResult, AnimeUnityEpisode, StreamData } from './types/animeunity';
 
 const BASE_URL = 'https://www.animeunity.so';
 const HEADERS = {
@@ -171,12 +171,14 @@ export class AnimeUnityExtractor {
             if (!seenIds.has(animeId)) {
               seenIds.add(animeId);
               const title = record.title_it || record.title_eng || record.title || '';
+              const languageType = this.detectLanguageType(title);
               
               results.push({
                 id: animeId,
                 slug: record.slug,
                 name: title.trim(),
-                episodes_count: record.episodes_count || 0
+                episodes_count: record.episodes_count || 0,
+                language_type: languageType
               });
               
               console.log(`📺 Added: ${title} - ID: ${animeId}`);
@@ -479,5 +481,20 @@ export class AnimeUnityExtractor {
       console.error('❌ Error extracting MP4 from VixCloud:', axiosError.message);
       return null;
     }
+  }
+
+  private detectLanguageType(title: string): 'Original' | 'Italian Dub' | 'Italian Sub' {
+    const lower = title.toLowerCase();
+    if (lower.includes('(ita)') || lower.endsWith(' ita')) {
+      return 'Italian Dub';
+    } else if (lower.includes('sub ita') || lower.includes('sub-ita')) {
+      return 'Italian Sub';
+    }
+    return 'Original';
+  }
+
+  // Alias per compatibilità con il codice esistente
+  async searchAllVersions(baseTitle: string): Promise<AnimeUnityResult[]> {
+    return this.search(baseTitle);
   }
 }
