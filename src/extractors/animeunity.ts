@@ -5,7 +5,6 @@ import { AnimeUnityResult, AnimeUnityEpisode, StreamData } from '../types/animeu
 const BASE_URL = 'https://www.animeunity.so';
 const HEADERS = {
   'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-  'Accept': 'application/json, text/plain, */*',
   'Accept-Language': 'it-IT,it;q=0.8,en-US;q=0.5,en;q=0.3',
   'Accept-Encoding': 'gzip, deflate, br',
   'DNT': '1',
@@ -31,6 +30,7 @@ export class AnimeUnityExtractor {
       const homeResponse = await axios.get(`${BASE_URL}/`, {
         headers: {
           ...HEADERS,
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
           'Cache-Control': 'no-cache',
           'Pragma': 'no-cache'
         },
@@ -79,6 +79,7 @@ export class AnimeUnityExtractor {
 
     const requestHeaders = {
       ...HEADERS,
+      'Accept': 'application/json, text/plain, */*',
       'Content-Type': 'application/json;charset=utf-8',
       'X-Requested-With': 'XMLHttpRequest',
       'X-CSRF-Token': this.csrfToken,
@@ -111,6 +112,7 @@ export class AnimeUnityExtractor {
         // Retry con nuova sessione
         const retryHeaders = {
           ...HEADERS,
+          'Accept': 'application/json, text/plain, */*',
           'Content-Type': 'application/json;charset=utf-8',
           'X-Requested-With': 'XMLHttpRequest',
           'X-CSRF-Token': this.csrfToken,
@@ -231,6 +233,7 @@ export class AnimeUnityExtractor {
       const countResponse = await axios.get(`${BASE_URL}/info_api/${animeId}/`, {
         headers: {
           ...HEADERS,
+          'Accept': 'application/json, text/plain, */*',
           'Cookie': this.cookieJar
         },
         timeout: 30000
@@ -246,6 +249,7 @@ export class AnimeUnityExtractor {
           params: { start_range: start, end_range: end },
           headers: {
             ...HEADERS,
+            'Accept': 'application/json, text/plain, */*',
             'Cookie': this.cookieJar
           },
           timeout: 30000
@@ -279,6 +283,7 @@ export class AnimeUnityExtractor {
       const pageResponse = await axios.get(`${BASE_URL}${episodeUrl}`, {
         headers: {
           ...HEADERS,
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
           'Cookie': this.cookieJar
         },
         timeout: 30000
@@ -328,7 +333,7 @@ export class AnimeUnityExtractor {
         headers: {
           'Referer': BASE_URL,
           'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-          ...HEADERS
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
         },
         timeout: 30000,
         httpsAgent: new (require('https').Agent)({ rejectUnauthorized: false })
