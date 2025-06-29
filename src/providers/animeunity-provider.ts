@@ -1,7 +1,7 @@
 import { AnimeUnityExtractor } from '../extractors/animeunity';
 import { KitsuProvider } from './kitsu';
 import { formatMediaFlowUrl } from '../utils/mediaflow';
-import { AnimeUnityConfig, StreamForStremio } from '../types/animeunity';
+import { AnimeUnityConfig, StreamForStremio } from '../types/animeunity'; // ✅ CORRETTO: Import aggiunto
 
 export class AnimeUnityProvider {
   private extractor = new AnimeUnityExtractor();
@@ -35,7 +35,7 @@ export class AnimeUnityProvider {
             title: `🎬 AnimeUnity ${version.language_type}`,
             url: `${this.config.mfpUrl}/anime/${version.id}-${version.slug}`,
             behaviorHints: {
-              bingeGroup: `animeunity_${version.language_type.toLowerCase().replace(' ', '_')}`
+              notWebReady: true
             }
           }))
         };
@@ -67,7 +67,7 @@ export class AnimeUnityProvider {
               title: `🎬 AnimeUnity ${version.language_type}`,
               url: mediaFlowUrl,
               behaviorHints: {
-                bingeGroup: `animeunity_${version.language_type.toLowerCase().replace(' ', '_')}`
+                notWebReady: true
               }
             });
             
@@ -76,7 +76,7 @@ export class AnimeUnityProvider {
                 title: `🎥 AnimeUnity ${version.language_type} (Embed)`,
                 url: streamResult.embed_url,
                 behaviorHints: {
-                  bingeGroup: `animeunity_${version.language_type.toLowerCase().replace(' ', '_')}_embed`
+                  notWebReady: true
                 }
               });
             }
