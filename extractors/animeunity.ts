@@ -1,16 +1,21 @@
 import axios from 'axios';
 import * as cheerio from 'cheerio';
-import { AnimeUnityResult, StreamData } from '../types/animeunity';
+import { AnimeUnityResult, AnimeUnityEpisode, StreamData } from '../types/animeunity';
 
 const BASE_URL = 'https://www.animeunity.so';
 const HEADERS = {
   'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
 };
+const TIMEOUT = 20000;
 
 export class AnimeUnityExtractor {
   private async getSessionTokens() {
-    const response = await axios.get(`${BASE_URL}/`, { headers: HEADERS });
-    const $ = cheerio.load(response.data);
+    const response = await axios.get(`${BASE_URL}/`, { 
+      headers: HEADERS,
+      timeout: TIMEOUT 
+    });
+    
+    const $ = cheerio.load(response.text);
     const csrfToken = $('meta[name=csrf-token]').attr('content') || '';
     
     return {
@@ -68,7 +73,7 @@ export class AnimeUnityExtractor {
 
           const response = await axios.post(endpoint.url, payload, {
             headers: session.sessionHeaders,
-            timeout: 20000
+            timeout: TIMEOUT
           });
 
           for (const record of response.data.records || []) {
@@ -99,5 +104,115 @@ export class AnimeUnityExtractor {
     return results;
   }
 
-  // Continua con altri metodi del paste-2.txt...
+  async getEpisodesList(animeId: number): Promise<AnimeUnityEpisode[]> {
+    const episodes: AnimeUnityEpisode[] = [];
+    
+    try {
+      const countResponse = await axios.get(`${BASE_URL}/info_api/${animeId}/`, {
+        headers: HEADERS,
+        timeout: TIMEOUT
+      });
+      
+      const totalEpisodes = countResponse.data.episodes_count || 0;
+      let start = 1;
+      
+      while (start <= totalEpisodes) {
+        const end = Math.min(start + 119, totalEpisodes);
+        
+        const episodesResponse = await axios.get(`${BASE_URL}/info_api/${animeId}/1`, {
+          params: { start_range: start, end_range: end },
+          headers: HEADERS,
+          timeout: TIMEOUT
+        });
+        
+        episodes.push(...episodesResponse.data.episodes.map((ep: any) => ({
+          id: ep.id,
+          number: ep.number,
+          name: ep.name || ''
+        })));
+        
+        start = end + 1;
+      }
+    } catch (error) {
+      console.error(`Error fetching episodes for anime ${animeId}:`, error);
+    }
+    
+    return episodes;
+  }
+
+  async extractStreamData(animeId: number, animeSlug: string, episodeId: number): Promise<StreamData> {
+    try {
+      const episodeUrl = `${BASE_URL}/anime/${animeId}-${animeSlug}/${episodeId}`;
+      const pageResponse = await axios.get(episodeUrl, { 
+        headers: HEADERS,
+        timeout: TIMEOUT 
+      });
+      
+      const $ = cheerio.load(pageResponse.text);
+      
+      let embedUrl = $('video-player').attr('embed_url');
+      
+      if (!embedUrl) {
+        const iframeMatch = pageResponse.data.match(/<iframe[^>]+src="([^"]*vixcloud[^"]+)"/);
+        if (iframeMatch) {
+          embedUrl = iframeMatch[1];
+        }
+      }
+      
+      if (!embedUrl) {
+        return { episode_page: episodeUrl };
+      }
+      
+      if (embedUrl.startsWith('//')) {
+        embedUrl = 'https:' + embedUrl;
+      } else if (embedUrl.startsWith('/')) {
+        embedUrl = BASE_URL + embedUrl;
+      }
+      
+      const mp4Url = await this.extractMp4FromVixCloud(embedUrl);
+      
+      return {
+        episode_page: episodeUrl,
+        embed_url: embedUrl,
+        mp4_url: mp4Url || undefined
+      };
+    } catch (error) {
+      console.error(`Error extracting stream:`, error);
+      return {};
+    }
+  }
+
+  private async extractMp4FromVixCloud(embedUrl: string): Promise<string | null> {
+    try {
+      const response = await axios.get(embedUrl, {
+        headers: {
+          ...HEADERS,
+          'Referer': BASE_URL
+        },
+        timeout: TIMEOUT,
+        httpsAgent: new (require('https').Agent)({ rejectUnauthorized: false })
+      });
+      
+      const patterns = [
+        /(?:src_mp4|file)\s*[:=]\s*["']([^"']+\.mp4[^"']*)["']/,
+        /(?:file|source|src)\s*[:=]\s*["']([^"']*au-d1-[^"']*\.mp4[^"']*)["']/,
+        /["']([^"']*scws-content\.net[^"']*\.mp4[^"']*)["']/
+      ];
+      
+      for (const pattern of patterns) {
+        const matches = response.data.match(pattern);
+        if (matches) {
+          let cleanUrl = matches[1].replace(/\\/g, '/');
+          if (cleanUrl.startsWith('http') && cleanUrl.includes('token=') && cleanUrl.includes('expires=')) {
+            return cleanUrl;
+          }
+        }
+      }
+      
+      return null;
+    } catch (error) {
+      console.error('Error extracting MP4 from VixCloud:', error);
+      return null;
+    }
+  }
 }
