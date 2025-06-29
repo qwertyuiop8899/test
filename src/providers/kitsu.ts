@@ -1,16 +1,13 @@
 import axios from 'axios';
-import { KitsuAnime } from '../types/animeunity';
-
-const TIMEOUT = 10000;
 
 export class KitsuProvider {
   async getAnimeInfo(kitsuId: string): Promise<{ title: string; date: string } | null> {
     try {
       const response = await axios.get(`https://kitsu.io/api/edge/anime/${kitsuId}`, {
-        timeout: TIMEOUT
+        timeout: 10000
       });
       
-      const data: KitsuAnime = response.data.data;
+      const data = response.data.data;
       const title = data.attributes.titles.en || data.attributes.canonicalTitle;
       const date = data.attributes.startDate;
       
