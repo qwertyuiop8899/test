@@ -15,7 +15,8 @@ export class AnimeUnityExtractor {
       timeout: TIMEOUT 
     });
     
-    const $ = cheerio.load(response.text);
+    // ✅ CORRETTO: response.data invece di response.text
+    const $ = cheerio.load(response.data);
     const csrfToken = $('meta[name=csrf-token]').attr('content') || '';
     
     return {
@@ -148,7 +149,8 @@ export class AnimeUnityExtractor {
         timeout: TIMEOUT 
       });
       
-      const $ = cheerio.load(pageResponse.text);
+      // ✅ CORRETTO: response.data invece di response.text
+      const $ = cheerio.load(pageResponse.data);
       
       let embedUrl = $('video-player').attr('embed_url');
       
