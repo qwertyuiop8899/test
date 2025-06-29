@@ -14,11 +14,11 @@ interface AddonConfig {
   mediaFlowProxyPassword?: string;
   tmdbApiKey?: string;
   bothLinks?: string;
-  animeunityEnabled?: string; // ✅ NUOVO: Aggiunto parametro AnimeUnity
+  animeunityEnabled?: string; // ✅ AGGIUNTO: Parametro AnimeUnity
   [key: string]: any;
 }
 
-// ✅ NUOVO: Classe provider AnimeUnity
+// ✅ AGGIUNTO: Classe provider AnimeUnity
 class AnimeUnityProvider {
   private extractor = new AnimeUnityExtractor();
   private kitsuProvider = new KitsuProvider();
@@ -147,7 +147,7 @@ const baseManifest: Manifest = {
             type: "checkbox"
         },
         {
-            key: "animeunityEnabled", // ✅ NUOVO: Parametro AnimeUnity
+            key: "animeunityEnabled", // ✅ AGGIUNTO: Parametro AnimeUnity
             title: "Enable AnimeUnity (Kitsu Catalog)",
             type: "checkbox"
         }
@@ -184,20 +184,16 @@ function loadCustomConfig(): Manifest {
 function parseConfigFromArgs(args: any): AddonConfig {
     const config: AddonConfig = {};
     
-    // Se args è una stringa, prova a decodificarla come JSON
     if (typeof args === 'string') {
         try {
-            // La configurazione nell'URL di Stremio è codificata in base64
             const decoded = decodeURIComponent(args);
             const parsed = JSON.parse(decoded);
             return parsed;
         } catch (error) {
-            // Ignora l'errore se non è un JSON valido o non è codificato
             return {};
         }
     }
     
-    // Se args è già un oggetto, usalo direttamente
     if (typeof args === 'object' && args !== null) {
         return args;
     }
@@ -207,10 +203,8 @@ function parseConfigFromArgs(args: any): AddonConfig {
 
 // Funzione per creare il builder con configurazione dinamica
 function createBuilder(config: AddonConfig = {}) {
-    // Use the configured manifest
     const manifest = loadCustomConfig();
     
-    // Modifica il manifest in base alla configurazione
     if (config.mediaFlowProxyUrl || config.bothLinks || config.tmdbApiKey) {
         manifest.name;
     }
@@ -229,8 +223,11 @@ function createBuilder(config: AddonConfig = {}) {
                 
                 const allStreams: Stream[] = [];
                 
-                // ✅ NUOVO: Gestione AnimeUnity per ID Kitsu
-                if (config.animeunityEnabled === 'on' && id.startsWith('kitsu:')) {
+                // ✅ AGGIUNTO: Gestione AnimeUnity per ID Kitsu con fallback variabile ambiente
+                const animeUnityEnabled = (config.animeunityEnabled === 'on') || 
+                                        (process.env.ANIMEUNITY_ENABLED?.toLowerCase() === 'true');
+                
+                if (animeUnityEnabled && id.startsWith('kitsu:')) {
                     console.log(`🎌 Processing Kitsu ID: ${id}`);
                     try {
                         const bothLinkValue = config.bothLinks === 'on';
@@ -255,14 +252,10 @@ function createBuilder(config: AddonConfig = {}) {
                 if (!id.startsWith('kitsu:')) {
                     console.log(`📺 Processing non-Kitsu ID with VixSrc: ${id}`);
                     
-                    // Priorità: Configurazione utente (URL) > Variabili d'ambiente (.env/secrets)
                     let bothLinkValue: boolean;
-                    // Se la config dall'URL contiene 'bothLinks', essa ha la precedenza assoluta.
-                    // Un checkbox non spuntato non viene incluso nel FormData, quindi `config.bothLinks` sarà undefined.
                     if (config.bothLinks !== undefined) {
                         bothLinkValue = config.bothLinks === 'on';
                     } else {
-                        // Altrimenti, usa la variabile d'ambiente come fallback.
                         bothLinkValue = process.env.BOTHLINK?.toLowerCase() === 'true';
                     }
 
@@ -309,24 +302,19 @@ function createBuilder(config: AddonConfig = {}) {
     return builder;
 }
 
-// --- Inizio del nuovo server Express ---
+// --- Server Express ---
 
 const app = express();
 
-// Serve i file statici (icona, sfondo) dalla directory public
-// Assumendo che la cartella 'public' sia nella root del progetto, accanto a 'src'
 app.use('/public', express.static(path.join(__dirname, '..', 'public')));
 
-// Route per la landing page
 app.get('/', (_, res) => {
-    const manifest = loadCustomConfig(); // Usa il manifest per generare la pagina
+    const manifest = loadCustomConfig();
     const landingHTML = landingTemplate(manifest);
     res.setHeader('Content-Type', 'text/html');
     res.send(landingHTML);
 });
 
-// Middleware che crea dinamicamente l'interfaccia dell'addon per ogni richiesta
-// Questo preserva la tua logica di configurazione dinamica
 app.use((req, res, next) => {
     const configString = req.path.split('/')[1];
     const config = parseConfigFromArgs(configString);
