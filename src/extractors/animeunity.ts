@@ -1,6 +1,6 @@
 import axios, { AxiosInstance, AxiosError } from 'axios';
 import * as cheerio from 'cheerio';
-import { AnimeUnityResult, AnimeUnityEpisode, StreamData } from './types/animeunity';
+import { AnimeUnityResult, AnimeUnityEpisode, StreamData } from '../types/animeunity';
 
 const BASE_URL = 'https://www.animeunity.so';
 const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)';
