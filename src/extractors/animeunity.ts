@@ -1,4 +1,4 @@
-import axios from 'axios';
+import axios, { AxiosInstance } from 'axios';
 import * as cheerio from 'cheerio';
 import { AnimeUnityResult, AnimeUnityEpisode, StreamData } from '../types/animeunity';
 
@@ -6,28 +6,71 @@ const BASE_URL = 'https://www.animeunity.so';
 const HEADERS = {
   'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
 };
-const TIMEOUT = 20000;
 
 export class AnimeUnityExtractor {
-  private async getSessionTokens() {
-    const response = await axios.get(`${BASE_URL}/`, { 
+  private axiosInstance: AxiosInstance;
+  private csrfToken: string = '';
+  private sessionCookies: string = '';
+  private lastTokenTime: number = 0;
+
+  constructor() {
+    // Crea istanza axios con jar cookie automatico
+    this.axiosInstance = axios.create({
+      baseURL: BASE_URL,
+      timeout: 20000,
       headers: HEADERS,
-      timeout: TIMEOUT 
+      withCredentials: true
     });
+  }
+
+  private async refreshSession(): Promise<void> {
+    const now = Date.now();
     
-    // ✅ CORRETTO: response.data invece di response.text
-    const $ = cheerio.load(response.data);
-    const csrfToken = $('meta[name=csrf-token]').attr('content') || '';
+    // Rinnova sessione ogni 2 minuti
+    if (!this.csrfToken || (now - this.lastTokenTime) > 120000) {
+      console.log('🔄 Refreshing AnimeUnity session...');
+      
+      try {
+        const response = await this.axiosInstance.get('/');
+        const $ = cheerio.load(response.data);
+        
+        this.csrfToken = $('meta[name=csrf-token]').attr('content') || '';
+        
+        // Estrai e salva tutti i cookie
+        const setCookieHeaders = response.headers['set-cookie'];
+        if (setCookieHeaders) {
+          this.sessionCookies = setCookieHeaders
+            .map(cookie => cookie.split(';')[0])
+            .join('; ');
+        }
+        
+        this.lastTokenTime = now;
+        
+        console.log(`✅ Session refreshed - Token: ${this.csrfToken.substring(0, 10)}...`);
+        console.log(`🍪 Cookies: ${this.sessionCookies.substring(0, 50)}...`);
+        
+      } catch (error) {
+        console.error('❌ Failed to refresh session:', error);
+        throw error;
+      }
+    }
+  }
+
+  private async makeAuthenticatedRequest(endpoint: string, data: any): Promise<any> {
+    await this.refreshSession();
     
-    return {
-      sessionHeaders: {
+    const config = {
+      headers: {
         'X-Requested-With': 'XMLHttpRequest',
         'Content-Type': 'application/json;charset=utf-8',
-        'X-CSRF-Token': csrfToken,
+        'X-CSRF-Token': this.csrfToken,
         'Referer': BASE_URL,
+        'Cookie': this.sessionCookies,
         ...HEADERS
       }
     };
+    
+    return await this.axiosInstance.post(endpoint, data, config);
   }
 
   private normalizeTitle(title: string): string {
@@ -49,14 +92,13 @@ export class AnimeUnityExtractor {
   }
 
   async searchAllVersions(baseTitle: string): Promise<AnimeUnityResult[]> {
-    const session = await this.getSessionTokens();
     const results: AnimeUnityResult[] = [];
     const seenIds = new Set<number>();
 
     const variants = ['', ' (ITA)', ' ITA', ' SUB ITA'];
     const endpoints = [
-      { url: `${BASE_URL}/livesearch`, isLive: true },
-      { url: `${BASE_URL}/archivio/get-animes`, isLive: false }
+      { url: '/livesearch', isLive: true },
+      { url: '/archivio/get-animes', isLive: false }
     ];
 
     for (const variant of variants) {
@@ -64,6 +106,8 @@ export class AnimeUnityExtractor {
       
       for (const endpoint of endpoints) {
         try {
+          console.log(`🔍 Searching: ${searchTerm} via ${endpoint.url}`);
+          
           const payload = endpoint.isLive 
             ? { title: searchTerm }
             : {
@@ -72,10 +116,9 @@ export class AnimeUnityExtractor {
                 season: false, offset: 0, dubbed: false
               };
 
-          const response = await axios.post(endpoint.url, payload, {
-            headers: session.sessionHeaders,
-            timeout: TIMEOUT
-          });
+          const response = await this.makeAuthenticatedRequest(endpoint.url, payload);
+          
+          console.log(`✅ Search successful: ${response.data.records?.length || 0} results`);
 
           for (const record of response.data.records || []) {
             const animeId = record.id;
@@ -97,11 +140,12 @@ export class AnimeUnityExtractor {
             }
           }
         } catch (error) {
-          console.warn(`Search error for ${searchTerm}:`, error);
+          console.error(`❌ Search failed for ${searchTerm}:`, error.response?.status || error.message);
         }
       }
     }
 
+    console.log(`🎯 Total unique results found: ${results.length}`);
     return results;
   }
 
@@ -109,9 +153,13 @@ export class AnimeUnityExtractor {
     const episodes: AnimeUnityEpisode[] = [];
     
     try {
-      const countResponse = await axios.get(`${BASE_URL}/info_api/${animeId}/`, {
-        headers: HEADERS,
-        timeout: TIMEOUT
+      await this.refreshSession();
+      
+      const countResponse = await this.axiosInstance.get(`/info_api/${animeId}/`, {
+        headers: {
+          'Cookie': this.sessionCookies,
+          ...HEADERS
+        }
       });
       
       const totalEpisodes = countResponse.data.episodes_count || 0;
@@ -120,10 +168,12 @@ export class AnimeUnityExtractor {
       while (start <= totalEpisodes) {
         const end = Math.min(start + 119, totalEpisodes);
         
-        const episodesResponse = await axios.get(`${BASE_URL}/info_api/${animeId}/1`, {
+        const episodesResponse = await this.axiosInstance.get(`/info_api/${animeId}/1`, {
           params: { start_range: start, end_range: end },
-          headers: HEADERS,
-          timeout: TIMEOUT
+          headers: {
+            'Cookie': this.sessionCookies,
+            ...HEADERS
+          }
         });
         
         episodes.push(...episodesResponse.data.episodes.map((ep: any) => ({
@@ -143,13 +193,16 @@ export class AnimeUnityExtractor {
 
   async extractStreamData(animeId: number, animeSlug: string, episodeId: number): Promise<StreamData> {
     try {
-      const episodeUrl = `${BASE_URL}/anime/${animeId}-${animeSlug}/${episodeId}`;
-      const pageResponse = await axios.get(episodeUrl, { 
-        headers: HEADERS,
-        timeout: TIMEOUT 
+      await this.refreshSession();
+      
+      const episodeUrl = `/anime/${animeId}-${animeSlug}/${episodeId}`;
+      const pageResponse = await this.axiosInstance.get(episodeUrl, {
+        headers: {
+          'Cookie': this.sessionCookies,
+          ...HEADERS
+        }
       });
       
-      // ✅ CORRETTO: response.data invece di response.text
       const $ = cheerio.load(pageResponse.data);
       
       let embedUrl = $('video-player').attr('embed_url');
@@ -162,7 +215,7 @@ export class AnimeUnityExtractor {
       }
       
       if (!embedUrl) {
-        return { episode_page: episodeUrl };
+        return { episode_page: BASE_URL + episodeUrl };
       }
       
       if (embedUrl.startsWith('//')) {
@@ -174,7 +227,7 @@ export class AnimeUnityExtractor {
       const mp4Url = await this.extractMp4FromVixCloud(embedUrl);
       
       return {
-        episode_page: episodeUrl,
+        episode_page: BASE_URL + episodeUrl,
         embed_url: embedUrl,
         mp4_url: mp4Url || undefined
       };
@@ -191,7 +244,7 @@ export class AnimeUnityExtractor {
           ...HEADERS,
           'Referer': BASE_URL
         },
-        timeout: TIMEOUT,
+        timeout: 20000,
         httpsAgent: new (require('https').Agent)({ rejectUnauthorized: false })
       });
       
