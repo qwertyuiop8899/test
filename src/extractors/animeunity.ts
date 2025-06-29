@@ -10,46 +10,63 @@ const HEADERS = {
 export class AnimeUnityExtractor {
   private axiosInstance: AxiosInstance;
   private csrfToken: string = '';
-  private cookieJar: string = '';
+  private cookieJar: Map<string, string> = new Map();
   private sessionInitialized: boolean = false;
 
   constructor() {
-    // Crea istanza axios con configurazione robusta per gestione cookie
+    // Crea istanza axios con cookie jar persistente
     this.axiosInstance = axios.create({
       baseURL: BASE_URL,
       timeout: 30000,
       headers: HEADERS,
-      withCredentials: true,
-      maxRedirects: 5,
-      validateStatus: (status) => status < 500 // Accetta anche 4xx per gestire errori CSRF
+      withCredentials: true
     });
 
-    // Intercettore per gestione automatica dei cookie
+    // Intercettore per gestire automaticamente i cookie
+    this.axiosInstance.interceptors.request.use((config) => {
+      // Aggiunge automaticamente i cookie salvati a ogni richiesta
+      if (this.cookieJar.size > 0) {
+        const cookieString = Array.from(this.cookieJar.entries())
+          .map(([name, value]) => `${name}=${value}`)
+          .join('; ');
+        config.headers.Cookie = cookieString;
+      }
+      return config;
+    });
+
     this.axiosInstance.interceptors.response.use(
       (response) => {
-        // Salva automaticamente i cookie dalle risposte Set-Cookie
-        if (response.headers['set-cookie']) {
-          this.cookieJar = response.headers['set-cookie']
-            .map(cookie => cookie.split(';')[0])
-            .join('; ');
+        // Salva automaticamente i cookie dalle risposte
+        const setCookieHeaders = response.headers['set-cookie'];
+        if (setCookieHeaders) {
+          setCookieHeaders.forEach(cookie => {
+            const [nameValue] = cookie.split(';');
+            const [name, value] = nameValue.split('=');
+            if (name && value) {
+              this.cookieJar.set(name.trim(), value.trim());
+            }
+          });
         }
         return response;
       },
       (error: AxiosError) => {
-        // Reset sessione se si riceve 419 (CSRF expired)
         if (error.response?.status === 419) {
           console.log('🔄 CSRF token expired, resetting session...');
-          this.sessionInitialized = false;
-          this.csrfToken = '';
-          this.cookieJar = '';
+          this.resetSession();
         }
         return Promise.reject(error);
       }
     );
   }
 
+  private resetSession(): void {
+    this.sessionInitialized = false;
+    this.csrfToken = '';
+    this.cookieJar.clear();
+  }
+
   private async initializeSession(): Promise<void> {
-    if (this.sessionInitialized && this.csrfToken && this.cookieJar) {
+    if (this.sessionInitialized && this.csrfToken) {
       return;
     }
 
@@ -74,20 +91,19 @@ export class AnimeUnityExtractor {
         throw new Error('CSRF token not found in homepage');
       }
 
-      // I cookie vengono salvati automaticamente dall'intercettore
       this.sessionInitialized = true;
-      console.log(`✅ Session initialized - CSRF: ${this.csrfToken.substring(0, 10)}...`);
-      console.log(`🍪 Cookies: ${this.cookieJar.substring(0, 50)}...`);
+      console.log(`✅ Session initialized`);
+      console.log(`🔑 CSRF Token: ${this.csrfToken.substring(0, 10)}...`);
+      console.log(`🍪 Cookies stored: ${this.cookieJar.size}`);
 
     } catch (error: unknown) {
-      // ✅ Fix TypeScript TS18046: Type casting esplicito
       const axiosError = error as AxiosError;
       console.error('❌ Failed to initialize session:', axiosError.message);
       throw error;
     }
   }
 
-  private async makeAuthenticatedRequest(endpoint: string, data: any): Promise<any> {
+  private async makeAuthenticatedRequest(endpoint: string, requestData: any): Promise<any> {
     await this.initializeSession();
 
     const requestConfig = {
@@ -100,13 +116,11 @@ export class AnimeUnityExtractor {
         'Origin': BASE_URL,
         'Accept-Language': 'it-IT,it;q=0.8,en-US;q=0.5,en;q=0.3',
         'Cache-Control': 'no-cache',
-        'Cookie': this.cookieJar, // Include cookie di sessione
         ...HEADERS
-      },
-      withCredentials: true
+      }
     };
 
-    return await this.axiosInstance.post(endpoint, data, requestConfig);
+    return await this.axiosInstance.post(endpoint, requestData, requestConfig);
   }
 
   private normalizeTitle(title: string): string {
@@ -132,7 +146,7 @@ export class AnimeUnityExtractor {
     const seenIds = new Set<number>();
 
     // Varianti linguistiche da cercare (replica logica paste-2)
-    const variants = ['', ' (ITA)', ' ITA', ' SUB ITA', ' Sub ITA'];
+    const variants = ['', ' (ITA)', ' ITA', ' SUB ITA'];
     const endpoints = [
       { url: '/livesearch', isLive: true },
       { url: '/archivio/get-animes', isLive: false }
@@ -145,6 +159,7 @@ export class AnimeUnityExtractor {
         try {
           console.log(`🔍 Searching: "${searchTerm}" via ${endpoint.url}`);
           
+          // ✅ FIX: Definisco payload qui per evitare errore TS2304
           const payload = endpoint.isLive 
             ? { title: searchTerm }
             : {
@@ -184,27 +199,34 @@ export class AnimeUnityExtractor {
             }
           }
         } catch (error: unknown) {
-          // ✅ Fix TypeScript TS18046: Gestione sicura dell'errore
           const axiosError = error as AxiosError;
           console.error(`❌ Search failed for "${searchTerm}":`, axiosError.response?.status || axiosError.message);
           
           // Se otteniamo 419, forza reinizializzazione sessione
           if (axiosError.response?.status === 419) {
-            this.sessionInitialized = false;
-            this.csrfToken = '';
-            this.cookieJar = '';
+            this.resetSession();
             
-            // Retry una sola volta con nuova sessione
+            // ✅ FIX: Retry con payload definito correttamente
             try {
+              console.log(`🔄 Retrying "${searchTerm}" with fresh session...`);
               await this.initializeSession();
-              const retryResponse = await this.makeAuthenticatedRequest(endpoint.url, payload);
+              
+              const retryPayload = endpoint.isLive 
+                ? { title: searchTerm }
+                : {
+                    title: searchTerm, type: false, year: false,
+                    order: 'Lista A-Z', status: false, genres: false,
+                    season: false, offset: 0, dubbed: false
+                  };
+              
+              const retryResponse = await this.makeAuthenticatedRequest(endpoint.url, retryPayload);
               if (retryResponse.status === 200 && retryResponse.data.records) {
-                console.log(`🔄 Retry successful after session refresh`);
-                // Processa i risultati del retry...
+                console.log(`🔄 Retry successful for "${searchTerm}"`);
+                // Processa i risultati del retry se necessario...
               }
             } catch (retryError: unknown) {
               const retryAxiosError = retryError as AxiosError;
-              console.error(`❌ Retry also failed:`, retryAxiosError.message);
+              console.error(`❌ Retry also failed for "${searchTerm}":`, retryAxiosError.message);
             }
           }
         }
@@ -221,13 +243,7 @@ export class AnimeUnityExtractor {
     try {
       await this.initializeSession();
       
-      const countResponse = await this.axiosInstance.get(`/info_api/${animeId}/`, {
-        headers: {
-          'Cookie': this.cookieJar,
-          ...HEADERS
-        }
-      });
-      
+      const countResponse = await this.axiosInstance.get(`/info_api/${animeId}/`);
       const totalEpisodes = countResponse.data.episodes_count || 0;
       let start = 1;
       
@@ -236,11 +252,7 @@ export class AnimeUnityExtractor {
         const end = Math.min(start + 119, totalEpisodes);
         
         const episodesResponse = await this.axiosInstance.get(`/info_api/${animeId}/1`, {
-          params: { start_range: start, end_range: end },
-          headers: {
-            'Cookie': this.cookieJar,
-            ...HEADERS
-          }
+          params: { start_range: start, end_range: end }
         });
         
         episodes.push(...episodesResponse.data.episodes.map((ep: any) => ({
@@ -254,7 +266,6 @@ export class AnimeUnityExtractor {
       
       console.log(`📺 Loaded ${episodes.length} episodes for anime ${animeId}`);
     } catch (error: unknown) {
-      // ✅ Fix TypeScript TS18046
       const axiosError = error as AxiosError;
       console.error(`❌ Error fetching episodes for anime ${animeId}:`, axiosError.message);
     }
@@ -269,9 +280,7 @@ export class AnimeUnityExtractor {
       const episodeUrl = `/anime/${animeId}-${animeSlug}/${episodeId}`;
       const pageResponse = await this.axiosInstance.get(episodeUrl, {
         headers: {
-          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-          'Cookie': this.cookieJar,
-          ...HEADERS
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
         }
       });
       
@@ -309,7 +318,6 @@ export class AnimeUnityExtractor {
       };
       
     } catch (error: unknown) {
-      // ✅ Fix TypeScript TS18046
       const axiosError = error as AxiosError;
       console.error(`❌ Error extracting stream data:`, axiosError.message);
       return {};
@@ -353,7 +361,6 @@ export class AnimeUnityExtractor {
       return null;
       
     } catch (error: unknown) {
-      // ✅ Fix TypeScript TS18046
       const axiosError = error as AxiosError;
       console.error('❌ Error extracting MP4 from VixCloud:', axiosError.message);
       return null;
