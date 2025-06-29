@@ -3,8 +3,21 @@ import * as cheerio from 'cheerio';
 import { AnimeUnityResult, AnimeUnityEpisode, StreamData } from '../types/animeunity';
 
 const BASE_URL = 'https://www.animeunity.so';
-const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)';
-const HEADERS = { 'User-Agent': USER_AGENT };
+const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+const HEADERS = { 
+  'User-Agent': USER_AGENT,
+  'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
+  'Accept-Language': 'it-IT,it;q=0.9,en;q=0.8',
+  'Accept-Encoding': 'gzip, deflate, br',
+  'DNT': '1',
+  'Connection': 'keep-alive',
+  'Upgrade-Insecure-Requests': '1',
+  'Sec-Fetch-Dest': 'document',
+  'Sec-Fetch-Mode': 'navigate',
+  'Sec-Fetch-Site': 'none',
+  'Sec-Fetch-User': '?1',
+  'Cache-Control': 'max-age=0'
+};
 const TIMEOUT = 20;
 
 export class AnimeUnityExtractor {
@@ -37,13 +50,20 @@ export class AnimeUnityExtractor {
         });
       }
 
-      // Crea session headers identici al Python
+      // Crea session headers identici al Python ma più completi
       this.sessionHeaders = {
+        'User-Agent': USER_AGENT,
+        'Accept': 'application/json, text/plain, */*',
+        'Accept-Language': 'it-IT,it;q=0.9,en;q=0.8',
+        'Accept-Encoding': 'gzip, deflate, br',
         'X-Requested-With': 'XMLHttpRequest',
         'Content-Type': 'application/json;charset=utf-8',
         'X-CSRF-Token': this.csrfToken,
         'Referer': BASE_URL,
-        'User-Agent': USER_AGENT
+        'Origin': BASE_URL,
+        'Sec-Fetch-Dest': 'empty',
+        'Sec-Fetch-Mode': 'cors',
+        'Sec-Fetch-Site': 'same-origin'
       };
 
       console.log(`✅ Session tokens obtained`);
@@ -81,6 +101,9 @@ export class AnimeUnityExtractor {
     for (const endpoint of searchEndpoints) {
       try {
         console.log(`🔍 Searching via ${endpoint.url}`);
+        
+        // Piccolo delay per sembrare più umano
+        await this.delay(1000 + Math.random() * 1000);
         
         // Crea headers per la richiesta (come Python)
         const requestHeaders = { ...this.sessionHeaders };
@@ -120,6 +143,16 @@ export class AnimeUnityExtractor {
         }
       } catch (error: unknown) {
         const axiosError = error as AxiosError;
+        
+        if (axiosError.response?.status === 403) {
+          console.error(`🛡️ Cloudflare protection detected on ${endpoint.url}`);
+          console.error(`📝 Response contains: ${axiosError.response.data?.toString().includes('Just a moment') ? 'Cloudflare challenge' : 'Other 403 error'}`);
+          
+          // Prova con delay più lungo
+          await this.delay(5000);
+          continue;
+        }
+        
         console.error(`❌ Search failed for ${endpoint.url}:`, axiosError.response?.status || axiosError.message);
       }
     }
@@ -372,5 +405,9 @@ export class AnimeUnityExtractor {
   // Alias per compatibilità con il codice esistente
   async searchAllVersions(baseTitle: string): Promise<AnimeUnityResult[]> {
     return this.search(baseTitle);
+  }
+
+  private async delay(ms: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, ms));
   }
 }
