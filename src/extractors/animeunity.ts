@@ -1,151 +1,73 @@
 import axios, { AxiosInstance, AxiosError } from 'axios';
 import * as cheerio from 'cheerio';
-import { AnimeUnityResult, AnimeUnityEpisode, StreamData } from '../types/animeunity';
+import { AnimeUnityResult, AnimeUnityEpisode, StreamData } from './types/animeunity';
 
 const BASE_URL = 'https://www.animeunity.so';
-const HEADERS = {
-  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-  'Accept-Language': 'it-IT,it;q=0.8,en-US;q=0.5,en;q=0.3',
-  'Accept-Encoding': 'gzip, deflate, br',
-  'DNT': '1',
-  'Connection': 'keep-alive',
-  'Upgrade-Insecure-Requests': '1'
-};
+const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)';
+const HEADERS = { 'User-Agent': USER_AGENT };
+const TIMEOUT = 20;
 
 export class AnimeUnityExtractor {
-  private cookieJar: string = '';
+  private cookies: { [key: string]: string } = {};
   private csrfToken: string = '';
-  private sessionValid: boolean = false;
+  private sessionHeaders: { [key: string]: string } = {};
 
-  private async refreshSessionWithCookies(): Promise<void> {
+  private async getSessionTokens(): Promise<void> {
     try {
-      console.log('🔄 Refreshing AnimeUnity session with cookie management...');
+      console.log('🔄 Getting session tokens...');
       
-      // Reset stato
-      this.cookieJar = '';
-      this.csrfToken = '';
-      this.sessionValid = false;
-
-      // Prima richiesta per ottenere cookie di sessione
-      const homeResponse = await axios.get(`${BASE_URL}/`, {
-        headers: {
-          ...HEADERS,
-          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-          'Cache-Control': 'no-cache',
-          'Pragma': 'no-cache'
-        },
-        timeout: 30000,
-        withCredentials: false // Disabilita withCredentials per gestione manuale
+      const response = await axios.get(`${BASE_URL}/`, {
+        headers: HEADERS,
+        timeout: TIMEOUT * 1000
       });
 
-      // Estrai CSRF token
-      const $ = cheerio.load(homeResponse.data);
+      const $ = cheerio.load(response.data);
       this.csrfToken = $('meta[name=csrf-token]').attr('content') || '';
 
-      // Estrai e salva TUTTI i cookie manualmente
-      const setCookieHeaders = homeResponse.headers['set-cookie'];
-      if (setCookieHeaders && setCookieHeaders.length > 0) {
-        this.cookieJar = setCookieHeaders
-          .map(cookie => cookie.split(';')[0]) // Prendi solo name=value
-          .join('; ');
-        
-        console.log(`✅ Session refreshed successfully`);
-        console.log(`🔑 CSRF Token: ${this.csrfToken.substring(0, 10)}...`);
-        console.log(`🍪 Cookies extracted: ${this.cookieJar.length} chars`);
-        console.log(`🍪 Cookie sample: ${this.cookieJar.substring(0, 100)}...`);
-        
-        this.sessionValid = true;
-      } else {
-        throw new Error('No cookies received from homepage');
-      }
-
-      if (!this.csrfToken) {
-        throw new Error('CSRF token not found in homepage');
-      }
-
-    } catch (error: unknown) {
-      const axiosError = error as AxiosError;
-      console.error('❌ Failed to refresh session:', axiosError.message);
-      this.sessionValid = false;
-      throw error;
-    }
-  }
-
-  private async makeAuthenticatedRequest(endpoint: string, data: any): Promise<any> {
-    // Assicurati che la sessione sia valida
-    if (!this.sessionValid) {
-      await this.refreshSessionWithCookies();
-    }
-
-    const requestHeaders = {
-      ...HEADERS,
-      'Accept': 'application/json, text/plain, */*',
-      'Content-Type': 'application/json;charset=utf-8',
-      'X-Requested-With': 'XMLHttpRequest',
-      'X-CSRF-Token': this.csrfToken,
-      'Referer': `${BASE_URL}/`,
-      'Origin': BASE_URL,
-      'Cookie': this.cookieJar // CRITICO: Include cookie manualmente
-    };
-
-    console.log(`📤 Making request to ${endpoint}`);
-    console.log(`🔑 Using CSRF: ${this.csrfToken.substring(0, 10)}...`);
-    console.log(`🍪 Using cookies: ${this.cookieJar.substring(0, 50)}...`);
-
-    try {
-      const response = await axios.post(`${BASE_URL}${endpoint}`, data, {
-        headers: requestHeaders,
-        timeout: 30000,
-        withCredentials: false // Gestione manuale
-      });
-
-      console.log(`✅ Request successful: ${response.status}`);
-      return response;
-
-    } catch (error: unknown) {
-      const axiosError = error as AxiosError;
-      
-      if (axiosError.response?.status === 419) {
-        console.log('🔄 CSRF expired, refreshing session and retrying...');
-        await this.refreshSessionWithCookies();
-        
-        // Retry con nuova sessione
-        const retryHeaders = {
-          ...HEADERS,
-          'Accept': 'application/json, text/plain, */*',
-          'Content-Type': 'application/json;charset=utf-8',
-          'X-Requested-With': 'XMLHttpRequest',
-          'X-CSRF-Token': this.csrfToken,
-          'Referer': `${BASE_URL}/`,
-          'Origin': BASE_URL,
-          'Cookie': this.cookieJar
-        };
-
-        const retryResponse = await axios.post(`${BASE_URL}${endpoint}`, data, {
-          headers: retryHeaders,
-          timeout: 30000,
-          withCredentials: false
+      // Estrai cookies come fa il Python
+      const setCookieHeaders = response.headers['set-cookie'];
+      if (setCookieHeaders) {
+        this.cookies = {};
+        setCookieHeaders.forEach(cookieHeader => {
+          const [cookiePair] = cookieHeader.split(';');
+          const [name, value] = cookiePair.split('=');
+          if (name && value) {
+            this.cookies[name.trim()] = value.trim();
+          }
         });
-
-        console.log(`✅ Retry successful: ${retryResponse.status}`);
-        return retryResponse;
       }
+
+      // Crea session headers identici al Python
+      this.sessionHeaders = {
+        'X-Requested-With': 'XMLHttpRequest',
+        'Content-Type': 'application/json;charset=utf-8',
+        'X-CSRF-Token': this.csrfToken,
+        'Referer': BASE_URL,
+        'User-Agent': USER_AGENT
+      };
+
+      console.log(`✅ Session tokens obtained`);
+      console.log(`🔑 CSRF Token: ${this.csrfToken.substring(0, 10)}...`);
       
+    } catch (error: unknown) {
+      const axiosError = error as AxiosError;
+      console.error('❌ Failed to get session tokens:', axiosError.message);
       throw error;
     }
   }
-
-
 
   async search(query: string): Promise<AnimeUnityResult[]> {
+    // Ottieni token di sessione (come Python)
+    await this.getSessionTokens();
+    
     const results: AnimeUnityResult[] = [];
     const seenIds = new Set<number>();
 
-    // Endpoint di ricerca (come Python script)
-    const endpoints = [
-      { url: '/livesearch', payload: { title: query } },
+    // Endpoint di ricerca (identici al Python)
+    const searchEndpoints = [
+      { url: `${BASE_URL}/livesearch`, payload: { title: query } },
       { 
-        url: '/archivio/get-animes', 
+        url: `${BASE_URL}/archivio/get-animes`, 
         payload: {
           title: query, type: false, year: false,
           order: 'Lista A-Z', status: false, genres: false,
@@ -156,12 +78,23 @@ export class AnimeUnityExtractor {
 
     console.log(`🔍 Starting search for: "${query}"`);
 
-    for (const endpoint of endpoints) {
+    for (const endpoint of searchEndpoints) {
       try {
         console.log(`🔍 Searching via ${endpoint.url}`);
         
-        const response = await this.makeAuthenticatedRequest(endpoint.url, endpoint.payload);
+        // Crea headers per la richiesta (come Python)
+        const requestHeaders = { ...this.sessionHeaders };
+        if (this.cookies && Object.keys(this.cookies).length > 0) {
+          requestHeaders['Cookie'] = Object.entries(this.cookies)
+            .map(([key, value]) => `${key}=${value}`)
+            .join('; ');
+        }
         
+        const response = await axios.post(endpoint.url, endpoint.payload, {
+          headers: requestHeaders,
+          timeout: TIMEOUT * 1000
+        });
+
         if (response.status === 200 && response.data.records) {
           const recordsCount = response.data.records.length;
           console.log(`✅ Found ${recordsCount} results`);
@@ -199,33 +132,23 @@ export class AnimeUnityExtractor {
     const episodes: AnimeUnityEpisode[] = [];
     
     try {
-      if (!this.sessionValid) {
-        await this.refreshSessionWithCookies();
-      }
-
+      // Ottieni conteggio episodi (come Python)
       const countResponse = await axios.get(`${BASE_URL}/info_api/${animeId}/`, {
-        headers: {
-          ...HEADERS,
-          'Accept': 'application/json, text/plain, */*',
-          'Cookie': this.cookieJar
-        },
-        timeout: 30000
+        headers: HEADERS,
+        timeout: TIMEOUT * 1000
       });
       
       const totalEpisodes = countResponse.data.episodes_count || 0;
-      let start = 1;
       
+      // Recupera episodi in batch (come Python)
+      let start = 1;
       while (start <= totalEpisodes) {
         const end = Math.min(start + 119, totalEpisodes);
         
         const episodesResponse = await axios.get(`${BASE_URL}/info_api/${animeId}/1`, {
           params: { start_range: start, end_range: end },
-          headers: {
-            ...HEADERS,
-            'Accept': 'application/json, text/plain, */*',
-            'Cookie': this.cookieJar
-          },
-          timeout: 30000
+          headers: HEADERS,
+          timeout: TIMEOUT * 1000
         });
         
         episodes.push(...episodesResponse.data.episodes.map((ep: any) => ({
@@ -247,55 +170,8 @@ export class AnimeUnityExtractor {
   }
 
   async extractStreamData(animeId: number, animeSlug: string, episodeId: number): Promise<StreamData> {
-    try {
-      if (!this.sessionValid) {
-        await this.refreshSessionWithCookies();
-      }
-      
-      const episodeUrl = `/anime/${animeId}-${animeSlug}/${episodeId}`;
-      const pageResponse = await axios.get(`${BASE_URL}${episodeUrl}`, {
-        headers: {
-          ...HEADERS,
-          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-          'Cookie': this.cookieJar
-        },
-        timeout: 30000
-      });
-      
-      const $ = cheerio.load(pageResponse.data);
-      
-      let embedUrl = $('video-player').attr('embed_url');
-      
-      if (!embedUrl) {
-        const iframeMatch = pageResponse.data.match(/<iframe[^>]+src="([^"]*vixcloud[^"]+)"/);
-        if (iframeMatch) {
-          embedUrl = iframeMatch[1];
-        }
-      }
-      
-      if (!embedUrl) {
-        return { episode_page: BASE_URL + episodeUrl };
-      }
-      
-      if (embedUrl.startsWith('//')) {
-        embedUrl = 'https:' + embedUrl;
-      } else if (embedUrl.startsWith('/')) {
-        embedUrl = BASE_URL + embedUrl;
-      }
-      
-      const mp4Url = await this.extractMp4FromVixCloud(embedUrl);
-      
-      return {
-        episode_page: BASE_URL + episodeUrl,
-        embed_url: embedUrl,
-        mp4_url: mp4Url || undefined
-      };
-      
-    } catch (error: unknown) {
-      const axiosError = error as AxiosError;
-      console.error(`❌ Error extracting stream data:`, axiosError.message);
-      return {};
-    }
+    // Usa il metodo principale (come Python)
+    return this.extractEmbedAndMp4Links(animeId, animeSlug, episodeId);
   }
 
   async extractEmbedAndMp4Links(animeId: number, animeSlug: string, episodeId: number): Promise<StreamData> {
@@ -357,7 +233,7 @@ export class AnimeUnityExtractor {
     try {
       const response = await axios.get(episodeUrl, {
         headers: HEADERS,
-        timeout: 30000
+        timeout: TIMEOUT * 1000
       });
       return response.data;
     } catch (error: unknown) {
@@ -382,7 +258,7 @@ export class AnimeUnityExtractor {
 
       const response = await axios.get(embedUrl, {
         headers: vixcloudHeaders,
-        timeout: 30000,
+        timeout: TIMEOUT * 1000,
         // Disabilita verifica certificati SSL come nello script Python
         validateStatus: () => true
       });
