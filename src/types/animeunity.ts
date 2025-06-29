@@ -28,19 +28,8 @@ export interface StreamData {
 export interface KitsuAnime {
   id: string;
   attributes: {
-    titles: {
-      en?: string;
-      ja_jp?: string;
-    };
+    titles: { en?: string; ja_jp?: string; };
     canonicalTitle: string;
     startDate: string;
-  };
-}
-
-export interface StreamForStremio {
-  title: string;
-  url: string;
-  behaviorHints: {
-    bingeGroup: string;
   };
 }
