@@ -32,15 +32,17 @@ class SportsonlineExtractor(BaseExtractor):
     def _detect_packed_blocks(self, html: str) -> list[str]:
         """
         Detect and extract packed eval blocks from HTML.
-        Replicates Python regex: 'eval(function(.+?.+)'
+        Replicates the TypeScript logic: /eval\(function(.+?.+)/g
         """
-        pattern = re.compile(r"eval\(function(.+?\))\s*\)", re.DOTALL)
-        raw_matches = []
+        # Find all eval(function...) blocks - more greedy to capture full packed code
+        pattern = re.compile(r"eval\(function\(p,a,c,k,e,.*?\)\)(?:\s*;|\s*<)", re.DOTALL)
+        raw_matches = pattern.findall(html)
         
-        for match in pattern.finditer(html):
-            # Reconstruct the full eval statement
-            packed_code = f"eval(function{match.group(1)})"
-            raw_matches.append(packed_code)
+        # If no matches with the strict pattern, try a more relaxed one
+        if not raw_matches:
+            # Try to find eval(function and capture until we find the closing ))
+            pattern = re.compile(r"eval\(function\(p,a,c,k,e,[dr]\).*?\}\(.*?\)\)", re.DOTALL)
+            raw_matches = pattern.findall(html)
         
         return raw_matches
 
@@ -85,6 +87,8 @@ class SportsonlineExtractor(BaseExtractor):
             # Step 3: Detect packed blocks
             packed_blocks = self._detect_packed_blocks(iframe_html)
             
+            logger.info(f"Found {len(packed_blocks)} packed blocks")
+            
             if not packed_blocks:
                 logger.warning("No packed blocks found, trying direct m3u8 search")
                 # Fallback: try direct m3u8 search
@@ -111,22 +115,34 @@ class SportsonlineExtractor(BaseExtractor):
             m3u8_url = None
             unpacked_code = None
 
+            logger.info(f"Chosen packed block index: {chosen_idx}")
+
             # Try to unpack chosen block
             try:
                 unpacked_code = unpack(packed_blocks[chosen_idx])
-                logger.debug(f"Unpacked block {chosen_idx} successfully")
+                logger.info(f"Successfully unpacked block {chosen_idx}")
+                logger.debug(f"Unpacked code preview: {unpacked_code[:500] if unpacked_code else 'empty'}")
             except Exception as e:
                 logger.warning(f"Failed to unpack block {chosen_idx}: {e}")
 
-            # Search for var src="...m3u8"
+            # Search for var src="...m3u8" with multiple patterns
             if unpacked_code:
-                src_match = re.search(r'var\s+src\s*=\s*["\']([^"\']+\.m3u8[^"\']*)["\']', unpacked_code)
-                if not src_match:
-                    # Try alternative patterns
-                    src_match = re.search(r'src\s*=\s*["\']([^"\']+\.m3u8[^"\']*)["\']', unpacked_code)
+                # Try multiple patterns as in the TypeScript version
+                patterns = [
+                    r'var\s+src\s*=\s*["\']([^"\']+)["\']',  # var src="..."
+                    r'src\s*=\s*["\']([^"\']+\.m3u8[^"\']*)["\']',  # src="...m3u8"
+                    r'file\s*:\s*["\']([^"\']+\.m3u8[^"\']*)["\']',  # file: "...m3u8"
+                    r'["\']([^"\']*https?://[^"\']+\.m3u8[^"\']*)["\']',  # any m3u8 URL
+                ]
                 
-                if src_match:
-                    m3u8_url = src_match.group(1)
+                for pattern in patterns:
+                    src_match = re.search(pattern, unpacked_code)
+                    if src_match:
+                        m3u8_url = src_match.group(1)
+                        # Verify it looks like a valid m3u8 URL
+                        if '.m3u8' in m3u8_url or 'http' in m3u8_url:
+                            break
+                        m3u8_url = None
 
             # If not found, try all other blocks
             if not m3u8_url:
@@ -136,13 +152,22 @@ class SportsonlineExtractor(BaseExtractor):
                         continue
                     try:
                         unpacked_code = unpack(block)
-                        src_match = re.search(r'var\s+src\s*=\s*["\']([^"\']+\.m3u8[^"\']*)["\']', unpacked_code)
-                        if not src_match:
-                            src_match = re.search(r'src\s*=\s*["\']([^"\']+\.m3u8[^"\']*)["\']', unpacked_code)
+                        # Use the same patterns as above
+                        for pattern in [
+                            r'var\s+src\s*=\s*["\']([^"\']+)["\']',
+                            r'src\s*=\s*["\']([^"\']+\.m3u8[^"\']*)["\']',
+                            r'file\s*:\s*["\']([^"\']+\.m3u8[^"\']*)["\']',
+                            r'["\']([^"\']*https?://[^"\']+\.m3u8[^"\']*)["\']',
+                        ]:
+                            src_match = re.search(pattern, unpacked_code)
+                            if src_match:
+                                test_url = src_match.group(1)
+                                if '.m3u8' in test_url or 'http' in test_url:
+                                    m3u8_url = test_url
+                                    logger.info(f"Found m3u8 in block {i}")
+                                    break
                         
-                        if src_match:
-                            m3u8_url = src_match.group(1)
-                            logger.info(f"Found m3u8 in block {i}")
+                        if m3u8_url:
                             break
                     except Exception as e:
                         logger.debug(f"Failed to process block {i}: {e}")
