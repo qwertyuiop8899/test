@@ -141,6 +141,86 @@ def _invalidate_dlhd_cache(destination: str):
         logger.info(f"DLHD cache invalidated for: {destination}")
 
 
+async def _check_and_extract_sportsonline_stream(
+    request: Request,
+    destination: str,
+    proxy_headers: ProxyRequestHeaders,
+    force_refresh: bool = False
+) -> dict | None:
+    """
+    Check if destination contains Sportsonline/Sportzonline patterns and extract stream directly.
+    Uses caching to avoid repeated extractions (10 minute cache).
+    
+    Args:
+        request (Request): The incoming HTTP request.
+        destination (str): The destination URL to check.
+        proxy_headers (ProxyRequestHeaders): The headers to include in the request.
+        force_refresh (bool): Force re-extraction even if cached data exists.
+        
+    Returns:
+        dict | None: Extracted stream data if Sportsonline link detected, None otherwise.
+    """
+    import re
+    from urllib.parse import urlparse
+    from mediaflow_proxy.extractors.factory import ExtractorFactory
+    from mediaflow_proxy.extractors.base import ExtractorError
+    from mediaflow_proxy.utils.http_utils import DownloadError
+    
+    # Check for Sportsonline/Sportzonline patterns in the URL
+    netloc = urlparse(destination).netloc.lower()
+    is_sportsonline_link = (
+        "sportzonline.st" in netloc or
+        "sportzonline.bz" in netloc or
+        "sportzonline.cc" in netloc or
+        "sportzonline.top" in netloc or
+        "sportsonline.si" in netloc or
+        "sportsonline.sn" in netloc
+    )
+    
+    if not is_sportsonline_link:
+        return None
+    
+    logger = logging.getLogger(__name__)
+    logger.info(f"Sportsonline link detected: {destination}")
+    
+    # Check cache first (unless force_refresh is True)
+    current_time = time.time()
+    if not force_refresh and destination in _dlhd_extraction_cache:
+        cached_entry = _dlhd_extraction_cache[destination]
+        cache_age = current_time - cached_entry["timestamp"]
+        
+        if cache_age < _dlhd_cache_duration:
+            logger.info(f"Using cached Sportsonline data (age: {cache_age:.1f}s)")
+            return cached_entry["data"]
+        else:
+            logger.info(f"Sportsonline cache expired (age: {cache_age:.1f}s), re-extracting...")
+            del _dlhd_extraction_cache[destination]
+    
+    # Extract stream data
+    try:
+        logger.info(f"Extracting Sportsonline stream data from: {destination}")
+        extractor = ExtractorFactory.get_extractor("SPON", proxy_headers.request)
+        result = await extractor.extract(destination)
+        
+        logger.info(f"Sportsonline extraction successful. Stream URL: {result.get('destination_url')}")
+        
+        # Cache the result
+        _dlhd_extraction_cache[destination] = {
+            "data": result,
+            "timestamp": current_time
+        }
+        logger.info(f"Sportsonline data cached for {_dlhd_cache_duration}s")
+        
+        return result
+        
+    except (ExtractorError, DownloadError) as e:
+        logger.error(f"Sportsonline extraction failed: {str(e)}")
+        raise HTTPException(status_code=400, detail=f"Sportsonline extraction failed: {str(e)}")
+    except Exception as e:
+        logger.exception(f"Unexpected error during Sportsonline extraction: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Sportsonline extraction failed: {str(e)}")
+
+
 async def _check_and_extract_dlhd_stream(
     request: Request, 
     destination: str, 
@@ -243,6 +323,24 @@ async def hls_manifest_proxy(
     
     # Check if this is a retry after 403 error (dlhd_retry parameter)
     force_refresh = request.query_params.get("dlhd_retry") == "1"
+    
+    # Check if destination contains Sportsonline pattern and extract stream directly
+    spon_result = await _check_and_extract_sportsonline_stream(
+        request, hls_params.destination, proxy_headers, force_refresh=force_refresh
+    )
+    if spon_result:
+        # Update destination and headers with extracted stream data
+        hls_params.destination = spon_result["destination_url"]
+        extracted_headers = spon_result.get("request_headers", {})
+        proxy_headers.request.update(extracted_headers)
+        
+        # Also add headers to query params so they propagate to key/segment requests
+        from fastapi.datastructures import QueryParams
+        query_dict = dict(request.query_params)
+        for header_name, header_value in extracted_headers.items():
+            query_dict[f"h_{header_name}"] = header_value
+        query_dict.pop("dlhd_retry", None)
+        request._query_params = QueryParams(query_dict)
     
     # Check if destination contains DLHD pattern and extract stream directly
     dlhd_result = await _check_and_extract_dlhd_stream(
@@ -531,6 +629,13 @@ async def proxy_stream_endpoint(
     """
     # Sanitize destination URL to fix common encoding issues
     destination = sanitize_url(destination)
+    
+    # Check if destination contains Sportsonline pattern and extract stream directly
+    spon_result = await _check_and_extract_sportsonline_stream(request, destination, proxy_headers)
+    if spon_result:
+        # Update destination and headers with extracted stream data
+        destination = spon_result["destination_url"]
+        proxy_headers.request.update(spon_result.get("request_headers", {}))
     
     # Check if destination contains DLHD pattern and extract stream directly
     dlhd_result = await _check_and_extract_dlhd_stream(request, destination, proxy_headers)
