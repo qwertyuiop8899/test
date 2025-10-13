@@ -645,6 +645,21 @@ async def proxy_stream_endpoint(
     return await proxy_stream(request.method, destination, proxy_headers)
 
 
+@proxy_router.options("/mpd/manifest.m3u8")
+async def mpd_manifest_options():
+    """Handle CORS preflight requests for MPD manifest."""
+    return Response(
+        status_code=200,
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
+            "Access-Control-Allow-Headers": "*",
+            "Access-Control-Max-Age": "86400",
+        }
+    )
+
+
+@proxy_router.head("/mpd/manifest.m3u8")
 @proxy_router.get("/mpd/manifest.m3u8")
 async def mpd_manifest_proxy(
     request: Request,
@@ -680,6 +695,21 @@ async def mpd_manifest_proxy(
     return await get_manifest(request, manifest_params, proxy_headers)
 
 
+@proxy_router.options("/mpd/playlist.m3u8")
+async def mpd_playlist_options():
+    """Handle CORS preflight requests for MPD playlist."""
+    return Response(
+        status_code=200,
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
+            "Access-Control-Allow-Headers": "*",
+            "Access-Control-Max-Age": "86400",
+        }
+    )
+
+
+@proxy_router.head("/mpd/playlist.m3u8")
 @proxy_router.get("/mpd/playlist.m3u8")
 async def playlist_endpoint(
     request: Request,
@@ -715,6 +745,21 @@ async def playlist_endpoint(
     return await get_playlist(request, playlist_params, proxy_headers)
 
 
+@proxy_router.options("/mpd/segment.mp4")
+async def mpd_segment_options():
+    """Handle CORS preflight requests for MPD segments."""
+    return Response(
+        status_code=200,
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
+            "Access-Control-Allow-Headers": "*",
+            "Access-Control-Max-Age": "86400",
+        }
+    )
+
+
+@proxy_router.head("/mpd/segment.mp4")
 @proxy_router.get("/mpd/segment.mp4")
 async def segment_endpoint(
     segment_params: Annotated[MPDSegmentParams, Query()],
