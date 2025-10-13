@@ -126,12 +126,22 @@ async def process_segment(
     """
     if key_id and key:
         # For DRM protected content
+        # The decrypt_segment function returns init+segment concatenated and decrypted
+        # Since we're using #EXT-X-MAP (HLS v7), the player expects:
+        # - Init segment separately (from #EXT-X-MAP URI with segment_url="")
+        # - Only the segment data (from regular segment URIs)
+        # However, the decryption process requires both init and segment together
+        # So we return the full decrypted content here and let the player handle it
         now = time.time()
         decrypted_content = decrypt_segment(init_content, segment_content, key_id, key)
         logger.info(f"Decryption of {mimetype} segment took {time.time() - now:.4f} seconds")
     else:
-        # For non-DRM protected content, we just concatenate init and segment content
-        decrypted_content = init_content + segment_content
+        # For non-DRM protected content
+        # When using #EXT-X-MAP (HLS v7):
+        # - Init segment is downloaded separately via #EXT-X-MAP URI (segment_url="")
+        # - Each segment should contain ONLY media data (no init)
+        # This allows the player to combine init + segments correctly
+        decrypted_content = segment_content
 
     # Add CORS headers for better compatibility with Safari and ExoPlayer
     response_headers = proxy_headers.response.copy()
