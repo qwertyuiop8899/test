@@ -215,7 +215,8 @@ def build_hls_playlist(mpd_dict: dict, profiles: list[dict], request: Request) -
     Returns:
         str: The HLS playlist as a string.
     """
-    hls = ["#EXTM3U", "#EXT-X-VERSION:3"]
+    # Use version 7 for fMP4 support with #EXT-X-MAP (required for Safari/ExoPlayer)
+    hls = ["#EXTM3U", "#EXT-X-VERSION:7"]
 
     added_segments = 0
 
@@ -263,6 +264,22 @@ def build_hls_playlist(mpd_dict: dict, profiles: list[dict], request: Request) -
                 hls.append("#EXT-X-PLAYLIST-TYPE:EVENT")
             else:
                 hls.append("#EXT-X-PLAYLIST-TYPE:VOD")
+            
+            # Add EXT-X-MAP for fMP4 (required for Safari and modern HLS players)
+            init_url = profile["initUrl"]
+            init_query_params = dict(request.query_params)
+            init_query_params.pop("profile_id", None)
+            init_query_params.pop("d", None)
+            has_encrypted_init = init_query_params.pop("has_encrypted", False)
+            init_query_params.update(
+                {"init_url": init_url, "segment_url": "", "mime_type": profile["mimeType"]}
+            )
+            init_segment_url = encode_mediaflow_proxy_url(
+                proxy_url,
+                query_params=init_query_params,
+                encryption_handler=encryption_handler if has_encrypted_init else None,
+            )
+            hls.append(f'#EXT-X-MAP:URI="{init_segment_url}"')
 
         init_url = profile["initUrl"]
 
