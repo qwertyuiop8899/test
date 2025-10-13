@@ -391,6 +391,21 @@ async def get_segment(
     """
     try:
         init_content = await get_cached_init_segment(segment_params.init_url, proxy_headers.request)
+        
+        # If segment_url is empty, return only the init segment (for #EXT-X-MAP)
+        if not segment_params.segment_url or segment_params.segment_url == "":
+            # Add CORS headers for better compatibility with Safari and ExoPlayer
+            response_headers = proxy_headers.response.copy()
+            response_headers.update({
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
+                "Access-Control-Allow-Headers": "*",
+                "Access-Control-Expose-Headers": "*",
+                "Cache-Control": "public, max-age=31536000",
+                "Accept-Ranges": "bytes"
+            })
+            return Response(content=init_content, media_type=segment_params.mime_type, headers=response_headers)
+        
         segment_content = await download_file_with_retry(segment_params.segment_url, proxy_headers.request)
     except Exception as e:
         return handle_exceptions(e)
