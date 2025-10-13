@@ -160,7 +160,7 @@ def build_hls(mpd_dict: dict, request: Request, key_id: str = None, key: str = N
     Returns:
         str: The HLS manifest as a string.
     """
-    hls = ["#EXTM3U", "#EXT-X-VERSION:3"]
+    hls = ["#EXTM3U", "#EXT-X-VERSION:7"]
     query_params = dict(request.query_params)
     has_encrypted = query_params.pop("has_encrypted", False)
 
