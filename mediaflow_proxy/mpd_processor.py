@@ -48,7 +48,19 @@ async def process_manifest(
                 dash_prebuffer.prebuffer_dash_manifest(mpd_url, headers)
             )
     
-    return Response(content=hls_content, media_type="application/vnd.apple.mpegurl", headers=proxy_headers.response)
+    # Add CORS and cache headers for better compatibility with Safari and ExoPlayer
+    response_headers = proxy_headers.response.copy()
+    response_headers.update({
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
+        "Access-Control-Allow-Headers": "*",
+        "Access-Control-Expose-Headers": "*",
+        "Cache-Control": "no-cache, no-store, must-revalidate",
+        "Pragma": "no-cache",
+        "Expires": "0"
+    })
+    
+    return Response(content=hls_content, media_type="application/vnd.apple.mpegurl", headers=response_headers)
 
 
 async def process_playlist(
@@ -74,7 +86,20 @@ async def process_playlist(
         raise HTTPException(status_code=404, detail="Profile not found")
 
     hls_content = build_hls_playlist(mpd_dict, matching_profiles, request)
-    return Response(content=hls_content, media_type="application/vnd.apple.mpegurl", headers=proxy_headers.response)
+    
+    # Add CORS and cache headers for better compatibility with Safari and ExoPlayer
+    response_headers = proxy_headers.response.copy()
+    response_headers.update({
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
+        "Access-Control-Allow-Headers": "*",
+        "Access-Control-Expose-Headers": "*",
+        "Cache-Control": "no-cache, no-store, must-revalidate",
+        "Pragma": "no-cache",
+        "Expires": "0"
+    })
+    
+    return Response(content=hls_content, media_type="application/vnd.apple.mpegurl", headers=response_headers)
 
 
 async def process_segment(
@@ -108,7 +133,18 @@ async def process_segment(
         # For non-DRM protected content, we just concatenate init and segment content
         decrypted_content = init_content + segment_content
 
-    return Response(content=decrypted_content, media_type=mimetype, headers=proxy_headers.response)
+    # Add CORS headers for better compatibility with Safari and ExoPlayer
+    response_headers = proxy_headers.response.copy()
+    response_headers.update({
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
+        "Access-Control-Allow-Headers": "*",
+        "Access-Control-Expose-Headers": "*",
+        "Cache-Control": "public, max-age=31536000",
+        "Accept-Ranges": "bytes"
+    })
+    
+    return Response(content=decrypted_content, media_type=mimetype, headers=response_headers)
 
 
 def build_hls(mpd_dict: dict, request: Request, key_id: str = None, key: str = None) -> str:
@@ -124,7 +160,7 @@ def build_hls(mpd_dict: dict, request: Request, key_id: str = None, key: str = N
     Returns:
         str: The HLS manifest as a string.
     """
-    hls = ["#EXTM3U", "#EXT-X-VERSION:6"]
+    hls = ["#EXTM3U", "#EXT-X-VERSION:3"]
     query_params = dict(request.query_params)
     has_encrypted = query_params.pop("has_encrypted", False)
 
@@ -179,7 +215,7 @@ def build_hls_playlist(mpd_dict: dict, profiles: list[dict], request: Request) -
     Returns:
         str: The HLS playlist as a string.
     """
-    hls = ["#EXTM3U", "#EXT-X-VERSION:6"]
+    hls = ["#EXTM3U", "#EXT-X-VERSION:3"]
 
     added_segments = 0
 
