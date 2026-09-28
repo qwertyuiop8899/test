@@ -8,7 +8,7 @@
       "id": "movyita",
       "name": "MovyITA",
       "description": "Video Movy + audio ITA (vixsrc/StreamingCommunity), audio originale come seconda traccia",
-      "version": "1.1.0",
+      "version": "1.1.1",
       "author": "local",
       "resources": ["stream"],
       "idPrefixes": ["tmdb:", "tt"],
@@ -18,7 +18,7 @@
       "contentLanguage": ["it", "en"],
       "formats": ["m3u8"],
       "limited": false,
-      "supportsExternalPlayer": false
+      "supportsExternalPlayer": true
     }
   ]
 }
