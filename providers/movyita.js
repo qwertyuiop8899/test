@@ -11,8 +11,8 @@ var MOVY_API = "https://api.wecollege.net";
 // All servers of the movy.sx player, most useful first (probed 2026-09: only miami/boise have 4K; munich often times out).
 var MOVY_SERVERS = ["miami", "boise", "atlanta", "orlando", "phoenix", "seattle", "denver", "portland", "dallas", "tampa",
   "paris", "cancun", "berlin", "austin", "delhi", "munich"];
-// ToastFlix measured its offsets on these servers' files (same host); other servers serve different encodes.
-var MOVY_SYNC_SERVERS = ["miami", "boise"];
+// NOT the search list (that is MOVY_SERVERS): only these servers' files were measured by ToastFlix, so only they get its sync badge.
+var TOASTFLIX_MEASURED_SERVERS = ["miami", "boise"];
 // NuvioTV runs fetches one at a time, so stop asking further servers after this.
 var MOVY_SERVERS_BUDGET_MS = 8000;
 var MOVY_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
@@ -254,6 +254,26 @@ function movyHeaders(site) {
   return { "User-Agent": MOVY_UA, "Accept": "*/*", "Origin": site, "Referer": site + "/" };
 }
 
+// The Movy API lists links even when the file is gone (403), so each playlist is checked before use.
+// Range keeps the check small when a link is really an MP4; playlist hosts ignore it.
+function getPlaylistHead(url, headers) {
+  var h = { "Range": "bytes=0-65535" };
+  Object.keys(headers).forEach(function (k) { h[k] = headers[k]; });
+  return getText(url, h, 8000).catch(function () { return null; });
+}
+
+function masterVariants(body, baseUrl) {
+  var lines = body.split(/\r?\n/), out = [];
+  for (var i = 0; i < lines.length - 1; i++) {
+    if (lines[i].indexOf("#EXT-X-STREAM-INF:") !== 0) continue;
+    var width = Number(String(attr(lines[i], "RESOLUTION") || "").split("x")[0]);
+    var uri = lines[i + 1].trim();
+    var qkey = width >= 3200 ? "2160" : width >= 2400 ? "1440" : width >= 1800 ? "1080" : width >= 1200 ? "720" : width >= 800 ? "480" : width > 0 ? "360" : null;
+    if (qkey && uri && uri.charAt(0) !== "#") out.push({ url: absUrl(uri, baseUrl), qkey: qkey });
+  }
+  return out;
+}
+
 function discoverMovyConfig() {
   return __async(function* () {
     for (var i = 0; i < MOVY_SITES.length; i++) {
@@ -295,11 +315,22 @@ function getMovySources(tmdbId, isTv, season, episode, meta) {
 
     var result = { sources: [], subtitles: [], headers: headers, api: cfg.api };
     var have = {};
+    var dirOk = {};
     var started = Date.now();
     for (var n = 0; n < MOVY_SERVERS.length; n++) {
       if (have["2160"] && have["1080"]) break;
       if (n > 0 && Date.now() - started > MOVY_SERVERS_BUDGET_MS) break;
       var server = MOVY_SERVERS[n];
+      var add = function (url, qkey) {
+        if (have[qkey]) return;
+        have[qkey] = true;
+        result.sources.push({
+          url: url,
+          qkey: qkey,
+          server: server.charAt(0).toUpperCase() + server.slice(1),
+          measured: TOASTFLIX_MEASURED_SERVERS.indexOf(server) >= 0
+        });
+      };
       var params = {
         title: encodeURIComponent(meta.title),
         mediaType: isTv ? "tv" : "movie",
@@ -317,18 +348,29 @@ function getMovySources(tmdbId, isTv, season, episode, meta) {
         var enc = yield getText(cfg.api + "/" + server + "/sources?" + toQuery(params), headers, n < 2 ? 15000 : 6000);
         if (!enc || !enc.trim()) continue;
         var data = JSON.parse(decryptMovyPayload(enc.trim(), seed, Number(tmdbId)));
-        (data.sources || []).forEach(function (s) {
-          var qkey = s && s.url ? qualityKey(s.quality) : null;
-          // The ITA track can only be attached to an HLS media playlist; unlabeled or opaque URLs are masters or MP4.
-          if (!qkey || have[qkey] || !/\.m3u8(?:$|[?#])/i.test(s.url)) return;
-          have[qkey] = true;
-          result.sources.push({
-            url: s.url,
-            qkey: qkey,
-            server: server.charAt(0).toUpperCase() + server.slice(1),
-            measured: MOVY_SYNC_SERVERS.indexOf(server) >= 0
-          });
-        });
+        // Non-.m3u8 links are MP4 or embeds: the ITA track can only be attached to HLS.
+        var list = (data.sources || []).filter(function (s) { return s && s.url && /\.m3u8(?:$|[?#])/i.test(s.url); });
+        for (var j = 0; j < list.length; j++) {
+          if (n > 0 && Date.now() - started > MOVY_SERVERS_BUDGET_MS) break;
+          var qkey = qualityKey(list[j].quality), url = list[j].url;
+          var dir = url.split("?")[0].replace(/[^\/]*$/, "");
+          if ((qkey && have[qkey]) || dirOk[dir] === false) continue;
+          // Qualities of one title sit in the same folder, so one working playlist vouches for its siblings.
+          if (qkey && dirOk[dir]) {
+            add(url, qkey);
+            continue;
+          }
+          var body = yield getPlaylistHead(url, headers);
+          if (body && body.indexOf("#EXT-X-STREAM-INF") >= 0) {
+            masterVariants(body, url).forEach(function (v) { add(v.url, v.qkey); });
+          } else if (body && body.indexOf("#EXTINF") >= 0) {
+            dirOk[dir] = true;
+            if (qkey) add(url, qkey);
+          } else {
+            dirOk[dir] = false;
+            console.warn("[MovyITA] Movy " + server + " " + (list[j].quality || "?") + ": playlist not reachable");
+          }
+        }
         (data.subtitles || []).forEach(function (sub) {
           if (!sub || !sub.url || result.subtitles.some(function (x) { return x.url === sub.url; })) return;
           result.subtitles.push({ url: sub.url, language: String(sub.language || sub.lang || "en"), name: sub.label || sub.name || sub.language || sub.lang || "Sub" });
