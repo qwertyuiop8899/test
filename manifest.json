@@ -9,7 +9,7 @@
       "name": "MovyITA",
       "description": "Video Movy + audio ITA (vixsrc/StreamingCommunity), audio originale come seconda traccia",
       "version": "1.2.3",
-      "author": "local",
+      "author": "PrisonMike",
       "resources": ["stream"],
       "idPrefixes": ["tmdb:", "tt"],
       "supportedTypes": ["movie", "series", "tv"],
