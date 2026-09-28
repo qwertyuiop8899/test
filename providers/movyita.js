@@ -8,7 +8,13 @@ var TMDB_BASE = "https://api.themoviedb.org/3";
 var MOVY_SITES = ["https://www.movy.sx", "https://movy.sx"];
 // Used directly: the ~400 KB homepage is scraped for a new API host only when this one stops answering.
 var MOVY_API = "https://api.wecollege.net";
-var MOVY_SERVERS = ["miami", "boise"];
+// All servers of the movy.sx player, most useful first (probed 2026-09: only miami/boise have 4K; munich often times out).
+var MOVY_SERVERS = ["miami", "boise", "atlanta", "orlando", "phoenix", "seattle", "denver", "portland", "dallas", "tampa",
+  "paris", "cancun", "berlin", "austin", "delhi", "munich"];
+// ToastFlix measured its offsets on these servers' files (same host); other servers serve different encodes.
+var MOVY_SYNC_SERVERS = ["miami", "boise"];
+// NuvioTV runs fetches one at a time, so stop asking further servers after this.
+var MOVY_SERVERS_BUDGET_MS = 8000;
 var MOVY_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 
 var VIX_DOMAINS_URL = "https://raw.githubusercontent.com/realbestia1/domains/refs/heads/main/domains.json";
@@ -236,11 +242,12 @@ function tmdbMeta(tmdbId, isTv) {
 
 // ---------------------------------------------------------------- Movy sources
 
+// null for labels without a resolution ("Auto", "Hindi", ...).
 function qualityKey(q) {
   var s = String(q || "").toLowerCase();
   if (s.indexOf("4k") >= 0) return "2160";
-  var m = s.match(/(\d{3,4})/);
-  return m && QUALITY_INFO[m[1]] ? m[1] : "1080";
+  var m = s.match(/(\d{3,4})p/);
+  return m && QUALITY_INFO[m[1]] ? m[1] : null;
 }
 
 function movyHeaders(site) {
@@ -287,8 +294,11 @@ function getMovySources(tmdbId, isTv, season, episode, meta) {
     var headers = movyHeaders(cfg.site);
 
     var result = { sources: [], subtitles: [], headers: headers, api: cfg.api };
-    var seen = {};
+    var have = {};
+    var started = Date.now();
     for (var n = 0; n < MOVY_SERVERS.length; n++) {
+      if (have["2160"] && have["1080"]) break;
+      if (n > 0 && Date.now() - started > MOVY_SERVERS_BUDGET_MS) break;
       var server = MOVY_SERVERS[n];
       var params = {
         title: encodeURIComponent(meta.title),
@@ -304,18 +314,25 @@ function getMovySources(tmdbId, isTv, season, episode, meta) {
         params.episodeId = String(episode);
       }
       try {
-        var enc = yield getText(cfg.api + "/" + server + "/sources?" + toQuery(params), headers, 15000);
+        var enc = yield getText(cfg.api + "/" + server + "/sources?" + toQuery(params), headers, n < 2 ? 15000 : 6000);
         if (!enc || !enc.trim()) continue;
         var data = JSON.parse(decryptMovyPayload(enc.trim(), seed, Number(tmdbId)));
         (data.sources || []).forEach(function (s) {
-          if (!s || !s.url || seen[s.url]) return;
-          seen[s.url] = true;
-          result.sources.push({ url: s.url, qkey: qualityKey(s.quality), server: server.charAt(0).toUpperCase() + server.slice(1) });
+          var qkey = s && s.url ? qualityKey(s.quality) : null;
+          // The ITA track can only be attached to an HLS media playlist; unlabeled or opaque URLs are masters or MP4.
+          if (!qkey || have[qkey] || !/\.m3u8(?:$|[?#])/i.test(s.url)) return;
+          have[qkey] = true;
+          result.sources.push({
+            url: s.url,
+            qkey: qkey,
+            server: server.charAt(0).toUpperCase() + server.slice(1),
+            measured: MOVY_SYNC_SERVERS.indexOf(server) >= 0
+          });
         });
         (data.subtitles || []).forEach(function (sub) {
-          if (sub && sub.url) result.subtitles.push({ url: sub.url, language: String(sub.language || sub.lang || "en"), name: sub.label || sub.name || sub.language || sub.lang || "Sub" });
+          if (!sub || !sub.url || result.subtitles.some(function (x) { return x.url === sub.url; })) return;
+          result.subtitles.push({ url: sub.url, language: String(sub.language || sub.lang || "en"), name: sub.label || sub.name || sub.language || sub.lang || "Sub" });
         });
-        if (result.sources.some(function (s) { return s.qkey === "2160"; })) break;
       } catch (e) {
         console.warn("[MovyITA] Movy " + server + ": " + e.message);
       }
@@ -451,25 +468,31 @@ function speedLabel(rate) {
   return "velocit\u00E0 \u00D7" + itNumber(Math.round(rate * 10000) / 10000);
 }
 
+// `tag` is the short form shown in the stream name next to the emoji.
 function classifySync(d) {
-  if (d.status !== "ok") return { level: "red", reason: d.status === "incompatible" ? "versioni audio/video diverse" : "sync non calcolabile" };
-  if (Math.abs(Number(d.rate || 1) - 1) > SYNC_RATE_TOLERANCE) return { level: "red", reason: "velocit\u00E0 diversa" };
-  if (d.has_cuts) return { level: "red", reason: "versioni con tagli diversi" };
+  if (d.status !== "ok") {
+    return d.status === "incompatible"
+      ? { level: "red", reason: "versioni audio/video diverse", tag: "versioni diverse" }
+      : { level: "red", reason: "sync non calcolabile", tag: "sync n/d" };
+  }
+  var rate = Number(d.rate || 1);
+  if (Math.abs(rate - 1) > SYNC_RATE_TOLERANCE) return { level: "red", reason: "velocit\u00E0 diversa", tag: speedLabel(rate) };
+  if (d.has_cuts) return { level: "red", reason: "versioni con tagli diversi", tag: "tagli" };
   var offset = Number(d.offset || 0);
-  if (Math.abs(offset) <= SYNC_OK_SECONDS) return { level: "green" };
+  if (Math.abs(offset) <= SYNC_OK_SECONDS) return { level: "green", tag: "in sync" };
   var delayMs = nuvioDelayMs(offset);
-  if (Math.abs(delayMs) > NUVIO_MAX_DELAY_MS) return { level: "red", reason: "offset oltre il limite di Nuvio \u00B13 s" };
-  return { level: "yellow", delayMs: delayMs };
+  if (Math.abs(delayMs) > NUVIO_MAX_DELAY_MS) return { level: "red", reason: "offset oltre il limite di Nuvio \u00B13 s", tag: formatDelay(delayMs) };
+  return { level: "yellow", delayMs: delayMs, tag: formatDelay(delayMs) };
 }
 
 // Offsets measured by ToastFlix for Movy video vs vixsrc audio; positive offset = audio must be delayed.
 function getSyncStatus(meta, isTv, season, episode) {
-  if (!meta.imdbId) return Promise.resolve({ level: "red", reason: "titolo senza IMDb" });
+  if (!meta.imdbId) return Promise.resolve({ level: "red", reason: "titolo senza IMDb", tag: "no IMDb" });
   var url = TOASTFLIX_URL + "/dual/offset/status?imdb=" + encodeURIComponent(meta.imdbId) +
     "&type=" + (isTv ? "series" : "movie") + "&season=" + (isTv ? Number(season) : 0) +
     "&episode=" + (isTv ? Number(episode) : 0) + "&provider=movy&audio_source=vixsrc";
   return getJson(url, { "Accept": "application/json" }, 8000).then(function (d) {
-    if (!d || !d.found) return { level: "red", reason: "offset non presente nel DB" };
+    if (!d || !d.found) return { level: "red", reason: "offset non presente nel DB", tag: "no offset" };
     var sync = classifySync(d);
     sync.info = {
       status: d.status,
@@ -480,7 +503,7 @@ function getSyncStatus(meta, isTv, season, episode) {
     return sync;
   }).catch(function (e) {
     console.warn("[MovyITA] ToastFlix sync status: " + e.message);
-    return { level: "unknown" };
+    return { level: "unknown", reason: "ToastFlix non raggiungibile", tag: "sync n/d" };
   });
 }
 
@@ -492,10 +515,12 @@ function autoDelayMs(info) {
 }
 
 function syncBadge(sync) {
-  if (sync.level === "green") return { icon: "\uD83D\uDD0A\u2705", line: "\uD83D\uDD0A\u2705 Audio in sync" };
-  if (sync.level === "yellow") return { icon: "\u26A0\uFE0F", line: "\u26A0\uFE0F Attenzione: audio da impostare a " + formatDelay(sync.delayMs) + " (poi rimetti 0)" };
-  if (sync.level === "red") return { icon: "\u26D4", line: "\u26D4 Audio non in sync, non riproducibile (" + sync.reason + ")" };
-  return { icon: "\u2754", line: "\u2754 Sync audio non verificato (ToastFlix non raggiungibile)" };
+  var icon = { green: "\uD83D\uDD0A\u2705", yellow: "\u26A0\uFE0F", red: "\u26D4" }[sync.level] || "\u2754";
+  var short = icon + " " + sync.tag;
+  if (sync.level === "green") return { short: short, line: icon + " Audio in sync" };
+  if (sync.level === "yellow") return { short: short, line: icon + " Attenzione: audio da impostare a " + formatDelay(sync.delayMs) + " (poi rimetti 0)" };
+  if (sync.level === "red") return { short: short, line: icon + " Audio non in sync, non riproducibile (" + sync.reason + ")" };
+  return { short: short, line: icon + " Sync audio non verificato (" + sync.reason + ")" };
 }
 
 function syncInfoLine(info) {
@@ -529,25 +554,30 @@ function getStreams(tmdbId, mediaType, season, episode) {
       }),
       getSyncStatus(meta, isTv, season, episode)
     ]);
-    var movy = results[0], ita = results[1], sync = results[2], badge = syncBadge(sync);
+    var movy = results[0], ita = results[1], measuredSync = results[2];
+    var unmeasuredSync = { level: "unknown", reason: "server con file diverso da Miami", tag: "non misurato" };
     if (!movy.sources.length) {
       console.warn("[MovyITA] no Movy sources for " + meta.title);
       return [];
     }
 
     var heading = "\uD83D\uDCC1 " + meta.title + (isTv ? " S" + pad2(season) + "E" + pad2(episode) : "") + (meta.year ? " (" + meta.year + ")" : "");
-    var audioLine = ita
-      ? "\uD83C\uDDEE\uD83C\uDDF9 Audio ITA (SC) + \uD83C\uDF0D originale\n" + badge.line + (sync.info ? "\n" + syncInfoLine(sync.info) : "")
-      : "\uD83C\uDF0D Solo audio originale (ITA non trovato)";
     var streams = movy.sources.map(function (src) {
       var q = QUALITY_INFO[src.qkey];
+      var sync = src.measured ? measuredSync : unmeasuredSync, badge = syncBadge(sync);
+      var details = (ita
+        ? badge.line + (sync.info ? "\n" + syncInfoLine(sync.info) : "") + "\n\uD83C\uDDEE\uD83C\uDDF9 Audio ITA (SC) + \uD83C\uDF0D originale"
+        : "\uD83C\uDF0D Solo audio originale (ITA non trovato)") +
+        "\n\uD83C\uDFAC Movy \u00B7 " + src.server + (ita && ita.subtitles.length ? " \u00B7 Sub ITA" : "");
       return {
-        name: "MovyITA " + q.label + (ita ? " \uD83C\uDDEE\uD83C\uDDF9 " + badge.icon : ""),
-        title: heading + "\n" + audioLine + "\n\uD83C\uDFAC Movy \u00B7 " + src.server + (ita && ita.subtitles.length ? " \u00B7 Sub ITA" : ""),
+        name: "MovyITA " + q.label + (ita ? " \uD83C\uDDEE\uD83C\uDDF9 " + badge.short : ""),
+        title: heading + "\n" + details,
+        // Text under the name: NuvioTV shows `size + language` (instead of `title`), Nuvio Mobile shows
+        // `quality + size + language` and ignores `title`. So the details go in `size` for both apps.
+        size: details,
         url: ita ? buildMasterDataUri(src.url, q, ita) : src.url,
         quality: q.label,
         type: "hls",
-        // No `language`/`size`: NuvioTV shows them as the description instead of `title`.
         provider: "movyita",
         headers: movy.headers,
         subtitles: movy.subtitles,
@@ -559,7 +589,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
     });
     streams.sort(function (a, b) { return b._rank - a._rank; });
     streams.forEach(function (s) { delete s._rank; });
-    console.log("[MovyITA] " + streams.length + " stream(s) via " + movy.api + ", ITA audio: " + (ita ? "yes" : "no") + ", sync: " + sync.level);
+    console.log("[MovyITA] " + streams.length + " stream(s) via " + movy.api + ", ITA audio: " + (ita ? "yes" : "no") + ", sync: " + measuredSync.level);
     return streams;
   }()).catch(function (e) {
     console.error("[MovyITA] " + e.message);
