@@ -14,6 +14,15 @@ var VIX_DOMAINS_URL = "https://raw.githubusercontent.com/realbestia1/domains/ref
 var VIX_DEFAULT_BASE = "https://vixsrc.to";
 var VIX_UA = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36";
 
+var TOASTFLIX_URL = "https://toastflix.stremio-italia.eu";
+// Lip-sync becomes noticeable around 45 ms early / 125 ms late (ITU-R BT.1359); 100 ms is a safe "in sync" band.
+var SYNC_OK_SECONDS = 0.1;
+// A speed mismatch below this drifts less than the sync band over a 2-hour film.
+var SYNC_RATE_TOLERANCE = SYNC_OK_SECONDS / 7200;
+// NuvioTV clamps the manual audio delay to ±3000 ms in 25 ms steps.
+var NUVIO_MAX_DELAY_MS = 3000;
+var NUVIO_DELAY_STEP_MS = 25;
+
 var QUALITY_INFO = {
   "2160": { label: "4K", resolution: "3840x2160", bandwidth: 16000000 },
   "1440": { label: "1440p", resolution: "2560x1440", bandwidth: 10000000 },
@@ -396,6 +405,43 @@ function pad2(n) {
   return (Number(n) < 10 ? "0" : "") + Number(n);
 }
 
+function nuvioDelayMs(seconds) {
+  return Math.round(Number(seconds) * 1000 / NUVIO_DELAY_STEP_MS) * NUVIO_DELAY_STEP_MS;
+}
+
+function formatDelay(ms) {
+  return (ms > 0 ? "+" : "") + String(ms / 1000).replace(".", ",") + " s";
+}
+
+// Offsets measured by ToastFlix for Movy video vs vixsrc audio; positive offset = audio must be delayed.
+function getSyncStatus(meta, isTv, season, episode) {
+  if (!meta.imdbId) return Promise.resolve({ level: "red", reason: "titolo senza IMDb" });
+  var url = TOASTFLIX_URL + "/dual/offset/status?imdb=" + encodeURIComponent(meta.imdbId) +
+    "&type=" + (isTv ? "series" : "movie") + "&season=" + (isTv ? Number(season) : 0) +
+    "&episode=" + (isTv ? Number(episode) : 0) + "&provider=movy&audio_source=vixsrc";
+  return getJson(url, { "Accept": "application/json" }, 8000).then(function (d) {
+    if (!d || !d.found) return { level: "red", reason: "offset non presente nel DB" };
+    if (d.status !== "ok") return { level: "red", reason: d.status === "incompatible" ? "versioni audio/video diverse" : "sync non calcolabile" };
+    if (Math.abs(Number(d.rate || 1) - 1) > SYNC_RATE_TOLERANCE) return { level: "red", reason: "velocit\u00E0 diversa (fps)" };
+    if (d.has_cuts) return { level: "red", reason: "versioni con tagli diversi" };
+    var offset = Number(d.offset || 0);
+    if (Math.abs(offset) <= SYNC_OK_SECONDS) return { level: "green" };
+    var delayMs = nuvioDelayMs(offset);
+    if (Math.abs(delayMs) > NUVIO_MAX_DELAY_MS) return { level: "red", reason: "offset " + formatDelay(delayMs) + " oltre il limite di Nuvio \u00B13 s" };
+    return { level: "yellow", delayMs: delayMs };
+  }).catch(function (e) {
+    console.warn("[MovyITA] ToastFlix sync status: " + e.message);
+    return { level: "unknown" };
+  });
+}
+
+function syncBadge(sync) {
+  if (sync.level === "green") return { icon: "\uD83D\uDD0A\u2705", line: "\uD83D\uDD0A\u2705 Audio in sync" };
+  if (sync.level === "yellow") return { icon: "\u26A0\uFE0F", line: "\u26A0\uFE0F Attenzione: audio da impostare a " + formatDelay(sync.delayMs) + " (poi rimetti 0)" };
+  if (sync.level === "red") return { icon: "\u26D4", line: "\u26D4 Audio non in sync, non riproducibile (" + sync.reason + ")" };
+  return { icon: "\u2754", line: "\u2754 Sync audio non verificato (ToastFlix non raggiungibile)" };
+}
+
 function getStreams(tmdbId, mediaType, season, episode) {
   console.log("[MovyITA] getStreams id=" + tmdbId + " type=" + mediaType + " s=" + season + " e=" + episode);
   return __async(function* () {
@@ -418,9 +464,10 @@ function getStreams(tmdbId, mediaType, season, episode) {
       getItalianTracks(id, isTv, season, episode).catch(function (e) {
         console.warn("[MovyITA] SC/vixsrc failed: " + e.message);
         return null;
-      })
+      }),
+      getSyncStatus(meta, isTv, season, episode)
     ]);
-    var movy = results[0], ita = results[1];
+    var movy = results[0], ita = results[1], badge = syncBadge(results[2]);
     if (!movy.sources.length) {
       console.warn("[MovyITA] no Movy sources for " + meta.title);
       return [];
@@ -429,9 +476,9 @@ function getStreams(tmdbId, mediaType, season, episode) {
     var heading = "\uD83D\uDCC1 " + meta.title + (isTv ? " S" + pad2(season) + "E" + pad2(episode) : "") + (meta.year ? " (" + meta.year + ")" : "");
     var streams = movy.sources.map(function (src) {
       var q = QUALITY_INFO[src.qkey];
-      var audioLine = ita ? "\uD83C\uDDEE\uD83C\uDDF9 Audio ITA (SC) + \uD83C\uDF0D originale" : "\uD83C\uDF0D Solo audio originale (ITA non trovato)";
+      var audioLine = ita ? "\uD83C\uDDEE\uD83C\uDDF9 Audio ITA (SC) + \uD83C\uDF0D originale\n" + badge.line : "\uD83C\uDF0D Solo audio originale (ITA non trovato)";
       return {
-        name: "MovyITA " + q.label + (ita ? " \uD83C\uDDEE\uD83C\uDDF9" : ""),
+        name: "MovyITA " + q.label + (ita ? " \uD83C\uDDEE\uD83C\uDDF9 " + badge.icon : ""),
         title: heading + "\n" + audioLine + "\n\uD83C\uDFAC Movy \u00B7 " + src.server + (ita && ita.subtitles.length ? " \u00B7 Sub ITA" : ""),
         url: ita ? buildMasterDataUri(src.url, q, ita) : src.url,
         quality: q.label,
@@ -445,7 +492,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
     });
     streams.sort(function (a, b) { return b._rank - a._rank; });
     streams.forEach(function (s) { delete s._rank; });
-    console.log("[MovyITA] " + streams.length + " stream(s) via " + movy.api + ", ITA audio: " + (ita ? "yes" : "no"));
+    console.log("[MovyITA] " + streams.length + " stream(s) via " + movy.api + ", ITA audio: " + (ita ? "yes" : "no") + ", sync: " + results[2].level);
     return streams;
   }()).catch(function (e) {
     console.error("[MovyITA] " + e.message);
