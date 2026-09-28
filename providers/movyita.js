@@ -22,6 +22,8 @@ var SYNC_RATE_TOLERANCE = SYNC_OK_SECONDS / 7200;
 // NuvioTV clamps the manual audio delay to ±3000 ms in 25 ms steps.
 var NUVIO_MAX_DELAY_MS = 3000;
 var NUVIO_DELAY_STEP_MS = 25;
+// Frame-rate pairs behind typical release speed changes (NTSC 1000/1001, PAL 25).
+var FPS_PAIRS = [[23.976, 24], [24, 25], [23.976, 25]];
 
 var QUALITY_INFO = {
   "2160": { label: "4K", resolution: "3840x2160", bandwidth: 16000000 },
@@ -405,12 +407,38 @@ function pad2(n) {
   return (Number(n) < 10 ? "0" : "") + Number(n);
 }
 
+function itNumber(n) {
+  return String(n).replace(".", ",");
+}
+
 function nuvioDelayMs(seconds) {
   return Math.round(Number(seconds) * 1000 / NUVIO_DELAY_STEP_MS) * NUVIO_DELAY_STEP_MS;
 }
 
 function formatDelay(ms) {
-  return (ms > 0 ? "+" : "") + String(ms / 1000).replace(".", ",") + " s";
+  return (ms >= 0 ? "+" : "") + itNumber(ms / 1000) + " s";
+}
+
+function speedLabel(rate) {
+  if (Math.abs(rate - 1) <= SYNC_RATE_TOLERANCE) return "stessa velocit\u00E0";
+  for (var i = 0; i < FPS_PAIRS.length; i++) {
+    var ratio = FPS_PAIRS[i][0] / FPS_PAIRS[i][1];
+    if (Math.abs(rate - ratio) < 0.0003 || Math.abs(rate - 1 / ratio) < 0.0003) {
+      return itNumber(FPS_PAIRS[i][0]) + "\u2194" + itNumber(FPS_PAIRS[i][1]) + " fps";
+    }
+  }
+  return "velocit\u00E0 \u00D7" + itNumber(Math.round(rate * 10000) / 10000);
+}
+
+function classifySync(d) {
+  if (d.status !== "ok") return { level: "red", reason: d.status === "incompatible" ? "versioni audio/video diverse" : "sync non calcolabile" };
+  if (Math.abs(Number(d.rate || 1) - 1) > SYNC_RATE_TOLERANCE) return { level: "red", reason: "velocit\u00E0 diversa" };
+  if (d.has_cuts) return { level: "red", reason: "versioni con tagli diversi" };
+  var offset = Number(d.offset || 0);
+  if (Math.abs(offset) <= SYNC_OK_SECONDS) return { level: "green" };
+  var delayMs = nuvioDelayMs(offset);
+  if (Math.abs(delayMs) > NUVIO_MAX_DELAY_MS) return { level: "red", reason: "offset oltre il limite di Nuvio \u00B13 s" };
+  return { level: "yellow", delayMs: delayMs };
 }
 
 // Offsets measured by ToastFlix for Movy video vs vixsrc audio; positive offset = audio must be delayed.
@@ -421,14 +449,14 @@ function getSyncStatus(meta, isTv, season, episode) {
     "&episode=" + (isTv ? Number(episode) : 0) + "&provider=movy&audio_source=vixsrc";
   return getJson(url, { "Accept": "application/json" }, 8000).then(function (d) {
     if (!d || !d.found) return { level: "red", reason: "offset non presente nel DB" };
-    if (d.status !== "ok") return { level: "red", reason: d.status === "incompatible" ? "versioni audio/video diverse" : "sync non calcolabile" };
-    if (Math.abs(Number(d.rate || 1) - 1) > SYNC_RATE_TOLERANCE) return { level: "red", reason: "velocit\u00E0 diversa (fps)" };
-    if (d.has_cuts) return { level: "red", reason: "versioni con tagli diversi" };
-    var offset = Number(d.offset || 0);
-    if (Math.abs(offset) <= SYNC_OK_SECONDS) return { level: "green" };
-    var delayMs = nuvioDelayMs(offset);
-    if (Math.abs(delayMs) > NUVIO_MAX_DELAY_MS) return { level: "red", reason: "offset " + formatDelay(delayMs) + " oltre il limite di Nuvio \u00B13 s" };
-    return { level: "yellow", delayMs: delayMs };
+    var sync = classifySync(d);
+    sync.info = {
+      status: d.status,
+      offsetMs: d.offset == null ? null : Math.round(Number(d.offset) * 1000),
+      rate: Number(d.rate || 1),
+      hasCuts: !!d.has_cuts
+    };
+    return sync;
   }).catch(function (e) {
     console.warn("[MovyITA] ToastFlix sync status: " + e.message);
     return { level: "unknown" };
@@ -440,6 +468,12 @@ function syncBadge(sync) {
   if (sync.level === "yellow") return { icon: "\u26A0\uFE0F", line: "\u26A0\uFE0F Attenzione: audio da impostare a " + formatDelay(sync.delayMs) + " (poi rimetti 0)" };
   if (sync.level === "red") return { icon: "\u26D4", line: "\u26D4 Audio non in sync, non riproducibile (" + sync.reason + ")" };
   return { icon: "\u2754", line: "\u2754 Sync audio non verificato (ToastFlix non raggiungibile)" };
+}
+
+function syncInfoLine(info) {
+  if (info.status !== "ok") return "\u23F1\uFE0F offset n/d \u00B7 \uD83C\uDF9E\uFE0F velocit\u00E0 n/d";
+  var line = "\u23F1\uFE0F offset " + formatDelay(nuvioDelayMs((info.offsetMs || 0) / 1000)) + " \u00B7 \uD83C\uDF9E\uFE0F " + speedLabel(info.rate);
+  return info.hasCuts ? line + " \u00B7 \u2702\uFE0F tagli" : line;
 }
 
 function getStreams(tmdbId, mediaType, season, episode) {
@@ -467,16 +501,18 @@ function getStreams(tmdbId, mediaType, season, episode) {
       }),
       getSyncStatus(meta, isTv, season, episode)
     ]);
-    var movy = results[0], ita = results[1], badge = syncBadge(results[2]);
+    var movy = results[0], ita = results[1], sync = results[2], badge = syncBadge(sync);
     if (!movy.sources.length) {
       console.warn("[MovyITA] no Movy sources for " + meta.title);
       return [];
     }
 
     var heading = "\uD83D\uDCC1 " + meta.title + (isTv ? " S" + pad2(season) + "E" + pad2(episode) : "") + (meta.year ? " (" + meta.year + ")" : "");
+    var audioLine = ita
+      ? "\uD83C\uDDEE\uD83C\uDDF9 Audio ITA (SC) + \uD83C\uDF0D originale\n" + badge.line + (sync.info ? "\n" + syncInfoLine(sync.info) : "")
+      : "\uD83C\uDF0D Solo audio originale (ITA non trovato)";
     var streams = movy.sources.map(function (src) {
       var q = QUALITY_INFO[src.qkey];
-      var audioLine = ita ? "\uD83C\uDDEE\uD83C\uDDF9 Audio ITA (SC) + \uD83C\uDF0D originale\n" + badge.line : "\uD83C\uDF0D Solo audio originale (ITA non trovato)";
       return {
         name: "MovyITA " + q.label + (ita ? " \uD83C\uDDEE\uD83C\uDDF9 " + badge.icon : ""),
         title: heading + "\n" + audioLine + "\n\uD83C\uDFAC Movy \u00B7 " + src.server + (ita && ita.subtitles.length ? " \u00B7 Sub ITA" : ""),
@@ -487,12 +523,14 @@ function getStreams(tmdbId, mediaType, season, episode) {
         provider: "movyita",
         headers: movy.headers,
         subtitles: movy.subtitles,
+        // Not read by Nuvio yet: offsetMs (>0 = delay audio) and rate, ready for a future auto-sync PR.
+        audioSync: ita ? sync.info : undefined,
         _rank: Number(src.qkey)
       };
     });
     streams.sort(function (a, b) { return b._rank - a._rank; });
     streams.forEach(function (s) { delete s._rank; });
-    console.log("[MovyITA] " + streams.length + " stream(s) via " + movy.api + ", ITA audio: " + (ita ? "yes" : "no") + ", sync: " + results[2].level);
+    console.log("[MovyITA] " + streams.length + " stream(s) via " + movy.api + ", ITA audio: " + (ita ? "yes" : "no") + ", sync: " + sync.level);
     return streams;
   }()).catch(function (e) {
     console.error("[MovyITA] " + e.message);
