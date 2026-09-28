@@ -6,7 +6,8 @@ var TMDB_BASE = "https://api.themoviedb.org/3";
 
 // Tried in order; add new mirrors here if the site moves without a redirect.
 var MOVY_SITES = ["https://www.movy.sx", "https://movy.sx"];
-var MOVY_API_FALLBACK = "https://api.wecollege.net";
+// Used directly: the ~400 KB homepage is scraped for a new API host only when this one stops answering.
+var MOVY_API = "https://api.wecollege.net";
 var MOVY_SERVERS = ["miami", "boise"];
 var MOVY_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 
@@ -36,8 +37,7 @@ var QUALITY_INFO = {
   "360": { label: "360p", resolution: "640x360", bandwidth: 800000 }
 };
 
-var vixBaseCache = { value: null, at: 0 };
-var movyCfgCache = { value: null, at: 0 };
+var movyCfg = { site: MOVY_SITES[0], api: MOVY_API };
 
 function __async(gen) {
   return new Promise(function (resolve, reject) {
@@ -247,8 +247,7 @@ function movyHeaders(site) {
   return { "User-Agent": MOVY_UA, "Accept": "*/*", "Origin": site, "Referer": site + "/" };
 }
 
-function getMovyConfig() {
-  if (movyCfgCache.value && Date.now() - movyCfgCache.at < 60 * 60 * 1000) return Promise.resolve(movyCfgCache.value);
+function discoverMovyConfig() {
   return __async(function* () {
     for (var i = 0; i < MOVY_SITES.length; i++) {
       try {
@@ -257,23 +256,35 @@ function getMovyConfig() {
         var html = yield res.text();
         var site = ((res.url || MOVY_SITES[i]).match(/^https?:\/\/[^\/]+/i) || [MOVY_SITES[i]])[0];
         var apis = (html.match(/https:\/\/api\.[a-z0-9-]+(?:\.[a-z0-9-]+)+/gi) || []).filter(function (u) { return !/tmdb|themoviedb|google|cloudflare/i.test(u); });
-        movyCfgCache = { value: { site: site, api: apis[0] || MOVY_API_FALLBACK }, at: Date.now() };
-        return movyCfgCache.value;
+        return { site: site, api: apis[0] || MOVY_API };
       } catch (e) {
         console.warn("[MovyITA] Movy site " + MOVY_SITES[i] + ": " + e.message);
       }
     }
-    return { site: MOVY_SITES[0], api: MOVY_API_FALLBACK };
+    return null;
   }());
+}
+
+function getMovySeed(cfg, tmdbId) {
+  return getJson(cfg.api + "/seed?mediaId=" + tmdbId, movyHeaders(cfg.site), 10000).then(function (d) {
+    if (!d || !d.seed) throw new Error("Movy: no seed");
+    return d.seed;
+  });
 }
 
 function getMovySources(tmdbId, isTv, season, episode, meta) {
   return __async(function* () {
-    var cfg = yield getMovyConfig();
+    var cfg = movyCfg, seed;
+    try {
+      seed = yield getMovySeed(cfg, tmdbId);
+    } catch (e) {
+      console.warn("[MovyITA] Movy API " + cfg.api + ": " + e.message);
+      var found = yield discoverMovyConfig();
+      if (!found || (found.api === cfg.api && found.site === cfg.site)) throw e;
+      cfg = movyCfg = found;
+      seed = yield getMovySeed(cfg, tmdbId);
+    }
     var headers = movyHeaders(cfg.site);
-    var seedRes = yield getJson(cfg.api + "/seed?mediaId=" + tmdbId, headers, 10000);
-    var seed = seedRes && seedRes.seed;
-    if (!seed) throw new Error("Movy: no seed");
 
     var result = { sources: [], subtitles: [], headers: headers, api: cfg.api };
     var seen = {};
@@ -315,18 +326,24 @@ function getMovySources(tmdbId, isTv, season, episode, meta) {
 
 // ---------------------------------------------------------------- vixsrc (StreamingCommunity) Italian audio
 
-function getVixBase() {
-  if (vixBaseCache.value && Date.now() - vixBaseCache.at < 10 * 60 * 1000) return Promise.resolve(vixBaseCache.value);
+// Only read when VIX_DEFAULT_BASE stops answering.
+function lookupVixBase() {
   return getText(VIX_DOMAINS_URL + "?_=" + Date.now(), { "Accept": "application/json" }, 6000).then(function (text) {
     var cfg = JSON.parse(text.replace(/("[^"\r\n]+")\s*("[^"]+"\s*:)/g, "$1,$2"));
     var base = String((cfg && cfg.vixsrc) || "").trim().replace(/\/+$/, "");
-    return /^https?:\/\//i.test(base) ? base : VIX_DEFAULT_BASE;
+    return /^https?:\/\//i.test(base) ? base : null;
   }).catch(function () {
-    return VIX_DEFAULT_BASE;
-  }).then(function (base) {
-    vixBaseCache = { value: base, at: Date.now() };
-    return base;
+    return null;
   });
+}
+
+function getVixPayload(base, apiPath) {
+  return getJson(base + apiPath + "?lang=it", {
+    "User-Agent": VIX_UA,
+    "Referer": base + "/",
+    "Accept": "application/json",
+    "Accept-Language": "it-IT,it;q=0.9,en;q=0.8"
+  }, 12000);
 }
 
 function attr(line, key) {
@@ -337,14 +354,16 @@ function attr(line, key) {
 
 function getItalianTracks(tmdbId, isTv, season, episode) {
   return __async(function* () {
-    var base = yield getVixBase();
     var apiPath = isTv ? "/api/tv/" + tmdbId + "/" + season + "/" + episode : "/api/movie/" + tmdbId;
-    var payload = yield getJson(base + apiPath + "?lang=it", {
-      "User-Agent": VIX_UA,
-      "Referer": base + "/",
-      "Accept": "application/json",
-      "Accept-Language": "it-IT,it;q=0.9,en;q=0.8"
-    }, 12000);
+    var base = VIX_DEFAULT_BASE, payload;
+    try {
+      payload = yield getVixPayload(base, apiPath);
+    } catch (e) {
+      var alt = yield lookupVixBase();
+      if (!alt || alt === base) throw e;
+      base = alt;
+      payload = yield getVixPayload(base, apiPath);
+    }
     if (!payload || !payload.src) return null;
 
     var embedUrl = absUrl(String(payload.src), base + "/");
@@ -528,7 +547,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
         url: ita ? buildMasterDataUri(src.url, q, ita) : src.url,
         quality: q.label,
         type: "hls",
-        language: ita ? "Italian" : "Original",
+        // No `language`/`size`: NuvioTV shows them as the description instead of `title`.
         provider: "movyita",
         headers: movy.headers,
         subtitles: movy.subtitles,
