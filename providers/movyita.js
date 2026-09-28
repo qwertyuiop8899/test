@@ -46,6 +46,8 @@ function __async(gen) {
 // ---------------------------------------------------------------- HTTP
 
 function fetchWithTimeout(url, options, ms) {
+  // NuvioTV's QuickJS runtime has no timers; its native fetch already has its own timeouts.
+  if (typeof setTimeout !== "function") return fetch(url, options);
   return new Promise(function (resolve, reject) {
     var done = false;
     var timer = setTimeout(function () {
@@ -196,6 +198,17 @@ function decryptMovyPayload(encB64, seed, mediaId) {
 }
 
 // ---------------------------------------------------------------- TMDB
+
+function resolveTmdbId(rawId, isTv) {
+  var id = String(rawId || "").trim().replace(/^tmdb:/i, "");
+  if (/^\d+$/.test(id)) return Promise.resolve(id);
+  var imdb = (id.match(/tt\d+/) || [])[0];
+  if (!imdb) return Promise.resolve(null);
+  return getJson(TMDB_BASE + "/find/" + imdb + "?api_key=" + TMDB_KEY + "&external_source=imdb_id", {}, 10000).then(function (d) {
+    var list = (isTv ? d.tv_results : d.movie_results) || [];
+    return list.length ? String(list[0].id) : null;
+  });
+}
 
 function tmdbMeta(tmdbId, isTv) {
   var url = TMDB_BASE + "/" + (isTv ? "tv" : "movie") + "/" + tmdbId + "?api_key=" + TMDB_KEY + "&append_to_response=external_ids";
@@ -373,7 +386,8 @@ function buildMasterDataUri(movyUrl, qinfo, ita) {
   // Base64 must end with '=' so FFmpeg's decoder stops before the "#.m3u8" hint used for HLS probing.
   if (text.length % 3 === 0) text += "\n";
   // "data://" instead of "data:": mpv only treats proto:// strings as URLs; ExoPlayer still reads the payload after the comma.
-  return "data://application/vnd.apple.mpegurl;base64," + asciiToBase64(text) + "#.m3u8";
+  // "/m3u8/" in the media type lets NuvioTV (URL-based MIME detection, ignores "type") pick the HLS source.
+  return "data://application/m3u8/;base64," + asciiToBase64(text) + "#.m3u8";
 }
 
 // ---------------------------------------------------------------- Entry point
@@ -383,11 +397,15 @@ function pad2(n) {
 }
 
 function getStreams(tmdbId, mediaType, season, episode) {
+  console.log("[MovyITA] getStreams id=" + tmdbId + " type=" + mediaType + " s=" + season + " e=" + episode);
   return __async(function* () {
-    var isTv = mediaType === "tv" || mediaType === "series";
-    var id = String(tmdbId).replace(/^tmdb:/i, "");
-    if (!/^\d+$/.test(id)) return [];
+    var isTv = mediaType === "tv" || mediaType === "series" || mediaType === "show";
     if (isTv && (season == null || episode == null)) return [];
+    var id = yield resolveTmdbId(tmdbId, isTv);
+    if (!id) {
+      console.warn("[MovyITA] unsupported id: " + tmdbId);
+      return [];
+    }
 
     var meta = yield tmdbMeta(id, isTv);
     if (!meta.title) return [];
@@ -403,7 +421,10 @@ function getStreams(tmdbId, mediaType, season, episode) {
       })
     ]);
     var movy = results[0], ita = results[1];
-    if (!movy.sources.length) return [];
+    if (!movy.sources.length) {
+      console.warn("[MovyITA] no Movy sources for " + meta.title);
+      return [];
+    }
 
     var heading = "\uD83D\uDCC1 " + meta.title + (isTv ? " S" + pad2(season) + "E" + pad2(episode) : "") + (meta.year ? " (" + meta.year + ")" : "");
     var streams = movy.sources.map(function (src) {
@@ -432,4 +453,5 @@ function getStreams(tmdbId, mediaType, season, episode) {
   });
 }
 
-module.exports = { getStreams: getStreams };
+if (typeof module !== "undefined" && module.exports) module.exports = { getStreams: getStreams };
+if (typeof globalThis !== "undefined") globalThis.getStreams = getStreams;
