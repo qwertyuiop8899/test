@@ -1,6 +1,6 @@
 {
   "name": "MovyITA",
-  "version": "1.2.4",
+  "version": "1.2.5",
   "description": "Video Movy (fino a 4K) con audio italiano di StreamingCommunity nello stesso stream",
   "author": "local",
   "scrapers": [
@@ -8,7 +8,7 @@
       "id": "movyita",
       "name": "MovyITA",
       "description": "Video Movy + audio ITA (vixsrc/StreamingCommunity), audio originale come seconda traccia",
-      "version": "1.2.4",
+      "version": "1.2.5",
       "author": "local",
       "resources": ["stream"],
       "idPrefixes": ["tmdb:", "tt"],
