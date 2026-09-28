@@ -22,6 +22,8 @@ var SYNC_RATE_TOLERANCE = SYNC_OK_SECONDS / 7200;
 // NuvioTV clamps the manual audio delay to ±3000 ms in 25 ms steps.
 var NUVIO_MAX_DELAY_MS = 3000;
 var NUVIO_DELAY_STEP_MS = 25;
+// Largest offset to hand to the proposed NuvioTV auto-sync; beyond it every seek costs too much buffering.
+var AUTO_DELAY_MAX_MS = 15000;
 // Frame-rate pairs behind typical release speed changes (NTSC 1000/1001, PAL 25).
 var FPS_PAIRS = [[23.976, 24], [24, 25], [23.976, 25]];
 
@@ -463,6 +465,13 @@ function getSyncStatus(meta, isTv, season, episode) {
   });
 }
 
+// Only a constant delay can be applied automatically: same speed, no cuts, within AUTO_DELAY_MAX_MS.
+function autoDelayMs(info) {
+  if (!info || info.status !== "ok" || info.hasCuts || info.offsetMs == null) return undefined;
+  if (Math.abs(info.rate - 1) > SYNC_RATE_TOLERANCE || Math.abs(info.offsetMs) > AUTO_DELAY_MAX_MS) return undefined;
+  return info.offsetMs;
+}
+
 function syncBadge(sync) {
   if (sync.level === "green") return { icon: "\uD83D\uDD0A\u2705", line: "\uD83D\uDD0A\u2705 Audio in sync" };
   if (sync.level === "yellow") return { icon: "\u26A0\uFE0F", line: "\u26A0\uFE0F Attenzione: audio da impostare a " + formatDelay(sync.delayMs) + " (poi rimetti 0)" };
@@ -523,8 +532,9 @@ function getStreams(tmdbId, mediaType, season, episode) {
         provider: "movyita",
         headers: movy.headers,
         subtitles: movy.subtitles,
-        // Not read by Nuvio yet: offsetMs (>0 = delay audio) and rate, ready for a future auto-sync PR.
+        // Not read by Nuvio yet. audioSync is informational; audioDelayMs (>0 = delay audio) is the proposed auto-sync field.
         audioSync: ita ? sync.info : undefined,
+        audioDelayMs: ita ? autoDelayMs(sync.info) : undefined,
         _rank: Number(src.qkey)
       };
     });
