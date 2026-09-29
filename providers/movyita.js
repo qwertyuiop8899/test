@@ -15,6 +15,7 @@ var MOVY_SERVERS = ["miami", "boise", "atlanta", "orlando", "phoenix", "seattle"
 var TOASTFLIX_MEASURED_SERVERS = ["miami", "boise"];
 // NuvioTV runs fetches one at a time, so stop asking further servers after this.
 var MOVY_SERVERS_BUDGET_MS = 8000;
+var MOVY_QUALITIES = ["2160", "1080", "720"];
 var MOVY_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 
 var VIX_DOMAINS_URL = "https://raw.githubusercontent.com/realbestia1/domains/refs/heads/main/domains.json";
@@ -322,7 +323,7 @@ function getMovySources(tmdbId, isTv, season, episode, meta) {
       if (n > 0 && Date.now() - started > MOVY_SERVERS_BUDGET_MS) break;
       var server = MOVY_SERVERS[n];
       var add = function (url, qkey) {
-        if (have[qkey]) return;
+        if (have[qkey] || MOVY_QUALITIES.indexOf(qkey) < 0) return;
         have[qkey] = true;
         result.sources.push({
           url: url,
@@ -354,7 +355,7 @@ function getMovySources(tmdbId, isTv, season, episode, meta) {
           if (n > 0 && Date.now() - started > MOVY_SERVERS_BUDGET_MS) break;
           var qkey = qualityKey(list[j].quality), url = list[j].url;
           var dir = url.split("?")[0].replace(/[^\/]*$/, "");
-          if ((qkey && have[qkey]) || dirOk[dir] === false) continue;
+          if ((qkey && (have[qkey] || MOVY_QUALITIES.indexOf(qkey) < 0)) || dirOk[dir] === false) continue;
           // Qualities of one title sit in the same folder, so one working playlist vouches for its siblings.
           if (qkey && dirOk[dir]) {
             add(url, qkey);
