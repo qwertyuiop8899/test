@@ -23,7 +23,7 @@
     {
       "id": "dualsync",
       "name": "DualSync",
-      "description": "Video 4K/FHD (Cinejoy, Vidfast) + audio ITA, offset ToastFlix se la durata del video corrisponde",
+      "description": "Video 4K/FHD (Cinejoy, Vidfast) + audio ITA, offset ToastFlix",
       "version": "1.0.1",
       "author": "local",
       "resources": ["stream"],
