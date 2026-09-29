@@ -1,6 +1,6 @@
 {
   "name": "ToastSync",
-  "version": "1.3.1",
+  "version": "1.3.2",
   "description": "Video da fonti internazionali con sync audio italiano",
   "author": "local",
   "scrapers": [
@@ -24,7 +24,7 @@
       "id": "dualsync",
       "name": "DualSync",
       "description": "Video 4K/FHD (Cinejoy, Vidfast) + audio ITA, offset ToastFlix",
-      "version": "1.0.1",
+      "version": "1.0.2",
       "author": "local",
       "resources": ["stream"],
       "idPrefixes": ["tmdb:", "tt"],
