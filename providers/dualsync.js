@@ -695,8 +695,8 @@ function getStreams(tmdbId, mediaType, season, episode) {
           // Not read by Nuvio yet. audioSync is informational; audioDelayMs (>0 = delay audio) is the proposed auto-sync field.
           audioSync: ita ? sync.info : undefined,
           audioDelayMs: ita ? autoDelayMs(sync.info) : undefined,
-          // Best verdict first, a measured offset before an estimate, then 4K before FHD.
-          _rank: (ita ? LEVEL_RANK[sync.level] * 100000 + (sync.measured ? 0 : 50000) : 0) - Number(qkey)
+          // 4K before FHD, then best verdict, then a measured offset before an estimate.
+          _rank: -Number(qkey) * 1000 + (ita ? LEVEL_RANK[sync.level] * 10 + (sync.measured ? 0 : 5) : 0)
         });
       });
     });
